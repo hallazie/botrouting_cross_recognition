@@ -1,0 +1,14 @@
+# ignore image data
+*.png
+*.bmp
+*.jpg
+*.jpeg
+
+# ignore parameter files
+*.params
+*.json
+
+*.pyc
+*.txt
+log
+log2
