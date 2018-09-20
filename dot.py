@@ -1,6 +1,6 @@
 #coding:utf-8
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 from collections import namedtuple
 
 import mxnet as mx
@@ -10,35 +10,40 @@ import logging
 import random
 
 ctx = mx.gpu(0)
-batch_size = 8
-model_prefix = 'params/foo'
+batch_size = 32
+model_prefix = 'params/dot'
 Batch = namedtuple('Batch', ['data'])
-size_1 = (640, 480)
-size_2 = (80, 60)
+size_1 = (256, 256)
+size_2 = (32, 32)
 
 logging.getLogger().setLevel(logging.DEBUG)
 
 def init_data(train):
 	if train:
-		data, label = mx.nd.zeros((302,1,size_1[1],size_1[0]), dtype='float32'), mx.nd.zeros((302,1,size_2[1],size_2[0]), dtype='float32')
-		for _,_,fs in os.walk('train/data'):
+		for _,_,fs in os.walk('crop/data'):
 			random.shuffle(fs)
+			data, label = np.zeros((len(fs),1,size_1[1],size_1[0]), dtype='float32'), np.zeros((len(fs),1,size_2[1],size_2[0]), dtype='float32')
 			for i, f in enumerate(fs):
-				img = Image.open('train/data/'+f)
+				img = Image.open('crop/data/'+f)
+				img = img.filter(ImageFilter.SMOOTH_MORE)
+				img = img.filter(ImageFilter.DETAIL)
+				img = img.filter(ImageFilter.EDGE_ENHANCE_MORE)
+				img = img.filter(ImageFilter.SMOOTH_MORE)
 				if random.randint(0,10)>3:
 					angle = random.randint(-45,45)
 					img = np.array(img.rotate(angle, resample=Image.BICUBIC))
 					data[i] = img
-					lbl = np.array(Image.open('train/label/'+f).resize((size_2[0],size_2[1]), resample=Image.BICUBIC).rotate(angle), resample=Image.BICUBIC)
+					lbl = np.array(Image.open('crop/label_dot/'+f).resize((size_2[0],size_2[1]), resample=Image.BICUBIC).rotate(angle, resample=Image.BICUBIC))
 					lbl[lbl>1] = 255
 					label[i] = lbl
 				else:
 					img = np.array(img)
 					data[i] = img
-					lbl = np.array(Image.open('train/label/'+f).resize((size_2[0],size_2[1]), resample=Image.BICUBIC))
+					lbl = np.array(Image.open('crop/label_dot/'+f).resize((size_2[0],size_2[1]), resample=Image.BICUBIC))
 					lbl[lbl>1] = 255
-					label[i] = lbl
+					label[i] = lbl		
 		data = (data-data.mean())/data.std()
+		lbl = lbl/255.
 		return mx.io.NDArrayIter(data=data, label=label, batch_size=batch_size, shuffle=True)
 	else:
 		data, label = mx.nd.zeros((1,1,size_1[1],size_1[0])), mx.nd.zeros((1,1,size_2[0],size_2[1]))
@@ -100,95 +105,11 @@ def conv_block(data, num_filter, kernel=(3,3), dilate=(1,1), pad=(2,2), stride=(
 def pool_block(data):
 	return mx.symbol.Pooling(data=data, kernel=(2,2), stride=(2,2), pool_type='max')
 
-def model_2():
-	data = mx.symbol.Variable('data')
-	label = mx.symbol.Variable('softmax_label')
-	c0 = conv_block(data, 16)
-	c1 = conv_block(c0, 16)
-	p1 = pool_block(c1)
-	c2 = conv_block(p1, 32)
-	p2 = pool_block(c2)
-	c3 = conv_block(p2, 64)
-	p3 = pool_block(c3)
-	c4 = conv_block(p3, 1, (1,1), (0,0), (0,0), (1,1))
-	# sm = mx.symbol.SoftmaxActivation(c4)
-	# loss = mx.symbol.LogisticRegressionOutput(c4, label)
-	loss = mx.symbol.LinearRegressionOutput(c4, label)
-	return loss
-
-'''def model(train):
-	data = mx.symbol.Variable('data')
-	label = mx.symbol.Variable('softmax_label')
-	c1_1 = conv_block(data, 16, (3,3), (0,0), (1,1), (1,1))
-	p1_2 = pool_block(c1_1)
-	c2_1 = conv_block(p1_2, 4, (3,3), (1,1), (1,1), (1,1))
-	c2_2 = conv_block(p1_2, 4, (3,3), (1,4), (1,4), (1,1))
-	c2_3 = conv_block(p1_2, 4, (3,3), (4,1), (4,1), (1,1))
-	c2_4 = conv_block(p1_2, 4, (3,3), (3,3), (3,3), (1,1))
-	c2_5 = conv_block(p1_2, 4, (3,3), (3,8), (3,8), (1,1))
-	c2_6 = conv_block(p1_2, 4, (3,3), (8,3), (8,3), (1,1))
-	c2_7 = conv_block(p1_2, 4, (3,3), (5,5), (5,5), (1,1))
-	c2_8 = conv_block(p1_2, 4, (3,3), (5,16), (5,16), (1,1))
-	c2_9 = conv_block(p1_2, 4, (3,3), (16,5), (16,5), (1,1))
-	p2_2 = pool_block(mx.symbol.concat(c2_1, c2_2, c2_3, c2_4, c2_5, c2_6, c2_7, c2_8, c2_9))
-	c3_1 = conv_block(p2_2, 6, (3,3), (3,3), (3,3), (1,1))
-	c3_2 = conv_block(p2_2, 6, (3,3), (3,8), (3,8), (1,1))
-	c3_3 = conv_block(p2_2, 6, (3,3), (8,3), (8,3), (1,1))
-	p3_2 = pool_block(mx.symbol.concat(c3_1, c3_2, c3_3))
-	c4_1 = conv_block(p3_2, 8, (3,3), (5,5), (5,5), (1,1))
-	c4_2 = conv_block(p3_2, 8, (3,3), (5,16), (5,16), (1,1))
-	c4_3 = conv_block(p3_2, 8, (3,3), (16,5), (16,5), (1,1))
-	ct_1 = mx.symbol.concat(c4_1, c4_2, c4_3)
-	# c5_1 = conv_block(ct_1, 12, (3,3), (6,3), (6,3), (1,1))
-	# c5_2 = conv_block(ct_1, 12, (3,3), (3,6), (3,6), (1,1))
-	# c5_3 = conv_block(ct_1, 12, (3,3), (3,3), (3,3), (1,1))
-
-	# p3 = pool_block(c3+c0)
-	# c4 = conv_block(p3, 32)
-	# c5 = conv_block(c4, 32)
-	# c6 = conv_block(c5, 32)
-	# c7 = conv_block(c6, 32)
-	# p7 = pool_block(c7+c4)
-	# c8 = conv_block(p7, 48)
-	# c9 = conv_block(c8, 48)
-	# c10 = conv_block(c9, 48)
-	# c11 = conv_block(c10, 48)
-	# p11 = pool_block(c11+c8)
-	co = conv_block(ct_1, 1, (1,1), (0,0), (0,0), (1,1))
-	if not train:
-		return co
-	loss = mx.symbol.LinearRegressionOutput(co, label)
-	return loss'''
-
 def model_000(train):
 	data = mx.symbol.Variable('data')
 	label = mx.symbol.Variable('softmax_label')
-	c1 = conv_block(data, 16, (3,3), (0,0), (1,1), (1,1))
-	c2 = conv_block(c1, 16, (3,3), (0,0), (1,1), (1,1))
-	p2 = pool_block(c2)
-	c3 = conv_block(p2, 24, (3,3), (2,2), (2,2), (1,1))
-	c4 = conv_block(c3, 24, (3,3), (2,2), (2,2), (1,1))
-	# p4 = pool_block(c4)
-	c5_1 = conv_block(c4, 16, (3,3), (2,2), (2,2), (1,1))
-	c5_2 = conv_block(c4, 16, (3,3), (4,4), (4,4), (1,1))
-	c5_3 = conv_block(c4, 16, (3,3), (8,8), (8,8), (1,1))
-	c5_c = mx.symbol.concat(c5_1,c5_2,c5_3)
-	# p5 = pool_block(c5_c)
-	c6_1 = conv_block(c5_c, 16, (3,3), (2,2), (2,2), (1,1))
-	c6_2 = conv_block(c5_c, 16, (3,3), (4,4), (4,4), (1,1))
-	c6_3 = conv_block(c5_c, 16, (3,3), (8,8), (8,8), (1,1))
-	c6_c = mx.symbol.concat(c6_1,c6_2,c6_3)
-	co = conv_block(c6_c, 1, (1,1), (0,0), (0,0), (1,1))
-	if not train:
-		return co
-	loss = mx.symbol.LinearRegressionOutput(co, label)
-	return loss
-
-def model(train):
-	data = mx.symbol.Variable('data')
-	label = mx.symbol.Variable('softmax_label')
-	c1 = conv_block(data, 16, (3,3), (0,0), (1,1), (1,1))
-	c2 = conv_block(c1, 16, (3,3), (0,0), (1,1), (1,1))
+	c1 = conv_block(data, 32, (3,3), (0,0), (1,1), (1,1))
+	c2 = conv_block(c1, 32, (3,3), (0,0), (1,1), (1,1))
 	p2 = pool_block(c2)
 	c3 = conv_block(p2, 16, (3,3), (0,0), (1,1), (1,1))
 	c4 = conv_block(p2, 16, (3,3), (3,3), (3,3), (1,1))
@@ -200,18 +121,32 @@ def model(train):
 	c5_c = mx.symbol.concat(c5_1,c5_2,c5_3)
 	p5 = pool_block(c5_c)
 	c6_0 = conv_block(p5, 16, (3,3), (0,0), (1,1), (1,1))
-	c6_1 = conv_block(p5, 16, (3,3), (8,8), (8,8), (1,1))
-	c6_2 = conv_block(p5, 16, (3,3), (16,16), (16,16), (1,1))
-	c6_3 = conv_block(p5, 16, (3,3), (64,64), (64,64), (1,1))
-	c6_4 = conv_block(p5, 4, (3,3), (16,128), (16,128), (1,1))
-	c6_5 = conv_block(p5, 4, (3,3), (128,16), (128,16), (1,1))
-	c6_c = mx.symbol.concat(c6_0,c6_1,c6_2,c6_3,c6_4,c6_5)
-	c7 = conv_block(c6_c, 64, (3,3), (0,0), (1,1), (1,1))
-	# c8 = conv_block(c7, 16, (3,3), (4,4), (4,4), (1,1))
-	co = conv_block(c7, 1, (1,1), (0,0), (0,0), (1,1))
+	c6_1 = conv_block(p5, 8, (3,3), (8,8), (8,8), (1,1))
+	c6_2 = conv_block(p5, 8, (3,3), (16,16), (16,16), (1,1))
+	c6_3 = conv_block(p5, 8, (3,3), (64,64), (64,64), (1,1))
+	c6_c = mx.symbol.concat(c6_0,c6_1,c6_2,c6_3)
+	# c7 = conv_block(c6_c, 64, (3,3), (0,0), (1,1), (1,1))
+	# c8 = conv_block(c7, 64, (3,3), (4,4), (4,4), (1,1))
+	co = conv_block(c6_c, 1, (1,1), (0,0), (0,0), (1,1))
 	if not train:
 		return mx.symbol.Group([co, c5_c])
-	loss = mx.symbol.LinearRegressionOutput(co, label)
+	loss = mx.symbol.SoftmaxOutput(co, label)
+	return loss
+
+def model(train):
+	data = mx.symbol.Variable('data')
+	label = mx.symbol.Variable('softmax_label')
+	c1 = conv_block(data, 32, (3,3), (0,0), (1,1), (1,1))
+	p1 = pool_block(c1)
+	c2 = conv_block(p1, 32, (3,3), (0,0), (1,1), (1,1))
+	p2 = pool_block(c2)
+	c3 = conv_block(p2, 128, (3,3), (12,12), (12,12), (1,1))
+	p3 = pool_block(c3)
+	c4 = conv_block(p3, 8, (3,3), (0,0), (1,1), (1,1))
+	co = conv_block(c4, 1, (1,1), (0,0), (0,0), (1,1))
+	if not train:
+		return mx.symbol.Group([co, c4])
+	loss = mx.symbol.SoftmaxOutput(co, label)
 	return loss
 
 def train():
@@ -220,16 +155,16 @@ def train():
 	mod = mx.mod.Module(symbol=symbol, context=ctx, data_names=('data',), label_names=('softmax_label',))
 	mod.bind(data_shapes=diter.provide_data, label_shapes=diter.provide_label)
 	mod.init_params(initializer=mx.init.Uniform(scale=.1))
-	# _, arg_params, aux_params = mx.model.load_checkpoint(model_prefix, 200)
+	# _, arg_params, aux_params = mx.model.load_checkpoint(model_prefix, 320)
 	# mod.set_params(arg_params, aux_params, allow_missing=True)
 	mod.fit(
 		diter,
 		optimizer = 'adam',
-		optimizer_params = {'learning_rate':0.025},
-		eval_metric = 'mse',
+		optimizer_params = {'learning_rate':0.005},
+		eval_metric = 'rmse',
 		batch_end_callback = mx.callback.Speedometer(batch_size, 1),
 		epoch_end_callback = mx.callback.do_checkpoint(model_prefix, 10),
-		num_epoch = 1000,
+		num_epoch = 2500,
 		)
 
 def predict():
@@ -238,18 +173,22 @@ def predict():
 	symbol = model(False)
 	mod = mx.mod.Module(symbol=symbol, context=ctx, data_names=('data',), label_names=('softmax_label',))
 	mod.bind(for_training=False, data_shapes=diter.provide_data)
-	_, arg_params, aux_params = mx.model.load_checkpoint(model_prefix, 100)
+	_, arg_params, aux_params = mx.model.load_checkpoint(model_prefix, 1580)
 	mod.set_params(arg_params, aux_params, allow_missing=True)
 	folder = 'val/raw/'
 	for _,_, fs in os.walk(folder):
 		fs = fs[:20]
 		for f in fs:
 			img = Image.open(folder+f)
-			img = img.rotate(random.randint(-45,45))
+			img = img.rotate(random.randint(-45,45), resample=Image.BICUBIC)
+			img = img.filter(ImageFilter.SMOOTH_MORE)
+			img = img.filter(ImageFilter.DETAIL)
+			img = img.filter(ImageFilter.EDGE_ENHANCE_MORE)
+			img = img.filter(ImageFilter.SMOOTH_MORE)
 			w,h = img.size
 			array = mx.nd.zeros((1,1,w,h))
 			npimg = np.array(img.convert('L'))
-			npimg[npimg>210] = 210
+			npimg = (npimg-npimg.mean())/npimg.std()
 			array[0,0,:] = mx.nd.array(npimg).transpose()
 			mod.forward(Batch([array]))
 			out = mod.get_outputs()[0][0][0].asnumpy().transpose()
