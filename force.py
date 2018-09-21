@@ -2,6 +2,7 @@
 
 from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageEnhance
 from matplotlib import pyplot as plt
+from progressbar import *
 
 import numpy as np
 import os
@@ -9,7 +10,7 @@ import cv2
 import math
 import random
 
-kernel_size = 51
+kernel_size = 75
 
 def clip(arr):
 	arr = 254*(arr-np.min(arr))/(np.max(arr)-np.min(arr))
@@ -133,8 +134,8 @@ def vis():
 	kernel_cros = gen_kernel(degree+17, 0)
 	kernel_vert = gen_kernel(degree+89, 0)
 	kernel_horz = gen_kernel(degree+42, 0)
-	img = Image.open('8.png').resize((320,240), resample=Image.LANCZOS).rotate(degree, resample=Image.BICUBIC)
-	arr = np.array(img)
+	raw = Image.open('9.png').resize((320,240), resample=Image.LANCZOS).rotate(degree, resample=Image.BICUBIC)
+	arr = np.array(raw)
 
 	img = Image.fromarray(arr.astype('uint8'))
 
@@ -190,9 +191,11 @@ def vis():
 
 	gmi = img.rotate(-rot)
 	plt.subplot(221)
-	plt.imshow(gmi)
+	kernel = gen_kernel(rot, 0)
+	act = activation(arr, kernel)
+	plt.imshow(act)
 
-	plt.subplot(223)
+	plt.subplot(222)
 	plt.plot(np.array(gmi).sum(axis=0))
 	plt.subplot(224)
 	plt.plot(np.array(gmi).sum(axis=1))
@@ -201,14 +204,66 @@ def vis():
 	coord = rotate_coord(center[0], center[1], rot, 160, 120)
 	endpoints = find_endpoints(coord, rot-90)
 
-	img = indicate_point(img.convert('RGB'), coord)
+	img = indicate_point(raw.convert('RGB'), coord)
 	img = indicate_line(img, endpoints)
 
-	plt.subplot(222)
+	plt.subplot(223)
 	plt.imshow(np.array(img))
 	plt.show()
-	img.save('6_ret.png')
+	img.save('9_ret.png')
+
+def predict(f):
+	msk = Image.open('val/res/mask/'+f).resize((320,240), resample=Image.LANCZOS)
+	arr = np.array(msk)
+
+	img = Image.fromarray(arr.astype('uint8'))
+
+	img = img.filter(ImageFilter.SMOOTH_MORE)
+	img = img.filter(ImageFilter.EMBOSS)
+	img = img.filter(ImageFilter.SMOOTH_MORE)
+	img = img.filter(ImageFilter.FIND_EDGES)
+	img = img.filter(ImageFilter.EDGE_ENHANCE_MORE)
+	img = img.filter(ImageFilter.SMOOTH_MORE)
+
+	arr = np.array(img)
+	w, h = arr.shape
+
+
+	pbar = ProgressBar(maxval=100, widgets=[Bar('=', '[', ']'), ' ', Percentage()]).start()
+
+	deglst = []
+	for deg in range(0,90):
+		arr = np.array(img)
+		kernel = gen_kernel(deg, 0)
+		act = activation(arr, kernel)
+		w,h = act.shape
+		metric = act[40:w-40, 40:h-40].mean()
+		deglst.append(metric)
+		pbar.update(int((float(deg) / (90 - 1)) * 100))
+	rot = deglst.index(max(deglst))
+	print rot
+
+	gmi = img.rotate(-rot)
+	kernel = gen_kernel(rot, 0)
+	act = activation(arr, kernel)
+
+	center = find_coords(np.array(gmi))
+	coord = rotate_coord(center[0], center[1], (90-rot)+90, 160, 120)
+	endpoints = find_endpoints(coord, rot-90)
+
+	raw = Image.open('val/res/raw/'+f.split('_')[0]+'_raw.png').resize((320,240), resample=Image.LANCZOS)
+	raw = indicate_point(raw.convert('RGB'), coord)
+	raw = indicate_line(raw, endpoints)
+	raw.save('val/res/out/'+f.split('_')[0]+'_out.png')
+
+	pbar.finish()
+
+	print '%s finished'%f
+
+def main():
+	for _,_, fs in os.walk('val/res/mask'):
+		for f in fs:
+			predict(f)
 
 if __name__ == '__main__':
-	vis()
-	# Image.open('3.png').rotate(-3).show()
+	predict('287,33000,9000,270_mask.png')
