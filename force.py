@@ -131,10 +131,10 @@ def rotate_coord(x,y,theta,c1,c2):
 
 def vis():
 	degree = 0
-	kernel_cros = gen_kernel(degree+17, 0)
-	kernel_vert = gen_kernel(degree+89, 0)
-	kernel_horz = gen_kernel(degree+42, 0)
-	raw = Image.open('9.png').resize((320,240), resample=Image.LANCZOS).rotate(degree, resample=Image.BICUBIC)
+	kernel_cros = gen_kernel(degree+7, 0)
+	kernel_vert = gen_kernel(degree+17, 0)
+	kernel_horz = gen_kernel(degree+27, 0)
+	raw = Image.open('5.png').resize((320,240), resample=Image.LANCZOS).rotate(degree, resample=Image.BICUBIC)
 	arr = np.array(raw)
 
 	img = Image.fromarray(arr.astype('uint8'))
@@ -149,68 +149,68 @@ def vis():
 	arr = np.array(img)
 	w, h = arr.shape
 
-	# plt.subplot(221)
-	# plt.title('mask map')
-	# plt.imshow(arr)
-
-	# arr = np.array(img)
-	# act_cros = activation(arr, kernel_cros)
-	# print act_cros[40:w-40, 40:h-40].mean()
-	# plt.subplot(222)
-	# plt.title('17 degree')
-	# plt.imshow(act_cros)
-
-	# arr = np.array(img)
-	# act_vert = activation(arr, kernel_vert)
-	# print act_vert[40:w-40, 40:h-40].mean()
-	# plt.subplot(223)
-	# plt.title('89 degree')
-	# plt.imshow(act_vert)
-
-	# arr = np.array(img)
-	# act_horz = activation(arr, kernel_horz)
-	# print act_horz[40:w-40, 40:h-40].mean()
-	# plt.subplot(224)
-	# plt.title('42 degree')
-	# plt.imshow(act_horz)
-
-	# plt.show()
-
-	deglst = []
-	for deg in range(0,90):
-		arr = np.array(img)
-		kernel = gen_kernel(deg, 0)
-		act = activation(arr, kernel)
-		w,h = act.shape
-		metric = act[40:w-40, 40:h-40].mean()
-		print '%s:%s'%(deg, metric)
-		deglst.append(metric)
-	rot = deglst.index(max(deglst))
-
-	print rot
-
-	gmi = img.rotate(-rot)
 	plt.subplot(221)
-	kernel = gen_kernel(rot, 0)
-	act = activation(arr, kernel)
-	plt.imshow(act)
+	plt.title('mask map')
+	plt.imshow(arr)
 
+	arr = np.array(img)
+	act_cros = activation(arr, kernel_cros)
+	print act_cros[40:w-40, 40:h-40].mean()
 	plt.subplot(222)
-	plt.plot(np.array(gmi).sum(axis=0))
-	plt.subplot(224)
-	plt.plot(np.array(gmi).sum(axis=1))
+	plt.title('7 degree, avg activation: %s'%round(act_cros[40:w-40, 40:h-40].mean(), 4))
+	plt.imshow(act_cros)
 
-	center = find_coords(np.array(gmi))
-	coord = rotate_coord(center[0], center[1], rot, 160, 120)
-	endpoints = find_endpoints(coord, rot-90)
-
-	img = indicate_point(raw.convert('RGB'), coord)
-	img = indicate_line(img, endpoints)
-
+	arr = np.array(img)
+	act_vert = activation(arr, kernel_vert)
+	print act_vert[40:w-40, 40:h-40].mean()
 	plt.subplot(223)
-	plt.imshow(np.array(img))
+	plt.title('17 degree, avg activation: %s'%round(act_vert[40:w-40, 40:h-40].mean(), 4))
+	plt.imshow(act_vert)
+
+	arr = np.array(img)
+	act_horz = activation(arr, kernel_horz)
+	plt.subplot(224)
+	print act_horz[40:w-40, 40:h-40].mean()
+	plt.title('27 degree, avg activation: %s'%round(act_horz[40:w-40, 40:h-40].mean(), 4))
+	plt.imshow(act_horz)
+
 	plt.show()
-	img.save('9_ret.png')
+
+	# deglst = []
+	# for deg in range(0,90):
+	# 	arr = np.array(img)
+	# 	kernel = gen_kernel(deg, 0)
+	# 	act = activation(arr, kernel)
+	# 	w,h = act.shape
+	# 	metric = act[40:w-40, 40:h-40].mean()
+	# 	print '%s:%s'%(deg, metric)
+	# 	deglst.append(metric)
+	# rot = deglst.index(max(deglst))
+
+	# print rot
+
+	# gmi = img.rotate(-rot)
+	# plt.subplot(221)
+	# kernel = gen_kernel(rot, 0)
+	# act = activation(arr, kernel)
+	# plt.imshow(act)
+
+	# plt.subplot(222)
+	# plt.plot(np.array(gmi).sum(axis=0))
+	# plt.subplot(224)
+	# plt.plot(np.array(gmi).sum(axis=1))
+
+	# center = find_coords(np.array(gmi))
+	# coord = rotate_coord(center[0], center[1], rot, 160, 120)
+	# endpoints = find_endpoints(coord, rot-90)
+
+	# img = indicate_point(raw.convert('RGB'), coord)
+	# img = indicate_line(img, endpoints)
+
+	# plt.subplot(223)
+	# plt.imshow(np.array(img))
+	# plt.show()
+	# img.save('9_ret.png')
 
 def predict(f):
 	msk = Image.open('val/res/mask/'+f).resize((320,240), resample=Image.LANCZOS)
@@ -254,7 +254,7 @@ def predict(f):
 	raw = Image.open('val/res/raw/'+f.split('_')[0]+'_raw.png').resize((320,240), resample=Image.LANCZOS)
 	raw = indicate_point(raw.convert('RGB'), coord)
 	raw = indicate_line(raw, endpoints)
-	raw.save('val/res/out/'+f.split('_')[0]+'_out.png')
+	raw.save('val/res/out/'+f.split('_')[0]+'_%s_out.png'%rot)
 
 	pbar.finish()
 
@@ -265,5 +265,25 @@ def main():
 		for f in fs:
 			predict(f)
 
+def show():
+	for _,_,fs in os.walk('val/res/out/'):
+		for f in fs:
+			# raw = Image.open('val/res/raw/'+f.split('_')[0]+'_raw.png').convert('RGB')
+			mask = Image.open('val/res/mask/'+f.split('_')[0]+'_mask.png')
+			out = Image.open('val/res/out/'+f)
+			# plt.subplot(212)
+			# plt.title('raw input')
+			# plt.imshow(np.array(raw))
+			plt.subplot(121)
+			plt.title('cnn mask output')
+			plt.imshow(np.array(mask))
+			plt.subplot(122)
+			plt.title('cross detection')
+			plt.imshow(np.array(out))
+			plt.savefig('val/res/fig/'+f.split('_')[0]+'_fig.png', dpi=128)
+			print '%s finished'%f
+			# return
+
 if __name__ == '__main__':
-	predict('287,33000,9000,270_mask.png')
+	# predict('287,33000,9000,270_mask.png')
+	vis()
