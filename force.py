@@ -84,6 +84,7 @@ def activation(arr, kernel):
 			c = conv(padded[i:i+kernel_size,j:j+kernel_size], kernel)
 			active[i,j] = c
 	img = Image.fromarray(clip(active).astype('uint8'))
+
 	img = img.filter(ImageFilter.GaussianBlur(2))
 	img = img.filter(ImageFilter.FIND_EDGES)
 	img = img.filter(ImageFilter.SMOOTH_MORE)
@@ -249,7 +250,7 @@ def predict(f):
 
 	center = find_coords(np.array(gmi))
 	coord = rotate_coord(center[0], center[1], (90-rot)+90, 160, 120)
-	endpoints = find_endpoints(coord, rot-90)
+	endpoints = find_endp4oints(coord, rot-90)
 
 	raw = Image.open('val/res/raw/'+f.split('_')[0]+'_raw.png').resize((320,240), resample=Image.LANCZOS)
 	raw = indicate_point(raw.convert('RGB'), coord)
