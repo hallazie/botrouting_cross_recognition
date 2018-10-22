@@ -287,4 +287,10 @@ def show():
 
 if __name__ == '__main__':
 	# predict('287,33000,9000,270_mask.png')
-	vis()
+	# vis()
+	import numpy as np
+	import matplotlib.pyplot as plt
+	x = [5000,8000,12000,15000,18000,20000,25000,30000,35000,40000,45000,50000]
+	y = [20,163,458,711,1128,1390,1637,1887,2030,2030,2105,2105]
+	plt.scatter(x, y)
+	plt.show()
