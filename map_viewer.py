@@ -8,14 +8,17 @@
 # 3.支持自定义网格线宽度    V
 # 4.验证透明度对提高显示效果的可用性
 # 5.添加修改/添加/删除单张图并回传数据库 V
-# 6.添加修改历史/redo-undo 
+# 6.添加修改历史undo       V
 # 7.改变坐标中心为中心的0,0 V
 # 8.点击查看全地图示例图    V
+# 9.添加旋转               V
+# 10.添加socket监听接收图像并显示+存储
 
 import Tkinter as tk
 import tkFileDialog
 import tkMessageBox
 import numpy as np
+import math
 import random
 import os
 import sys
@@ -23,6 +26,8 @@ import sqlite3
 import traceback
 import datetime
 import copy
+import socket as sk
+import threading
 
 from PIL import Image, ImageTk
 
@@ -35,31 +40,34 @@ class Imgobj:
         self.ox = x
         self.oy = y
         self.theta = theta
+        self.rot = 0.
         self.show = True
         self.image_back = None
+        self.labeled = False
+        self.fixed = False
     
     def enter_boundingbox(self, idx):
-        # if self.image_back==None:
-        #     self.image_back = self.image
-        #     tmp = np.array(self.image.resize((320,320)).convert('RGB'))
-        #     tmp[:320,0,0] = 255
-        #     tmp[:320,319,0] = 255
-        #     tmp[0,:320,0] = 255
-        #     tmp[319,:320,0] = 255
-        #     self.image = Image.fromarray(tmp.astype('uint8')).resize((320*scale, 320*scale))
         if self.image_back==None:
             self.image_back = self.image
             tmp = np.array(self.image.convert('RGB'))
             w, h = self.image.size
-            tmp[:w,   0:2,   idx] = 255
-            tmp[:w,   h-2:,  idx] = 255
-            tmp[0:2,  :h,    idx] = 255
-            tmp[w-2:, :h,    idx] = 255
+            for i in range(3):
+                if i == idx:
+                    tmp[:w,   0:5,   i] = 255
+                    tmp[:w,   h-5:,  i] = 255
+                    tmp[0:5,  :h,    i] = 255
+                    tmp[w-5:, :h,    i] = 255
+                else:
+                    tmp[:w,   0:5,   i] = 0
+                    tmp[:w,   h-5:,  i] = 0
+                    tmp[0:5,  :h,    i] = 0
+                    tmp[w-5:, :h,    i] = 0
             self.image = Image.fromarray(tmp.astype('uint8'))
 
     def leave_boundingbox(self):
-        self.image = self.image_back
-        self.image_back = None
+        if self.image_back != None:
+            self.image = self.image_back
+            self.image_back = None
 
 class Lineobj:
     def __init__(self, direct, show):
@@ -75,6 +83,7 @@ class Mapviewer:
         self.imgsize = 320
         self.mil2pix_ratio = 0.40625
         self.current_coords = 0, 0
+        self.current_angle = 0.
         self.total_map_shift = (0, 0)
         self.width = 1280
         self.height = 960
@@ -83,7 +92,6 @@ class Mapviewer:
         self.grid_horz = []
         self.grid_vert = []
         self.canvas = None
-        self.last_canvx, self.last_canvy = 0, 0
         self.window = [(0, 1280), (0, 960)]
         self.factor = 1.1
         self.maxx, self.maxy = 0, 0
@@ -95,26 +103,35 @@ class Mapviewer:
         self.y_axis_gap_val = 1000
         self.show_grid_flag = True
         self.edit_delete_flag = False
-        # self.coord_central = 160*self.mil2pix_ratio, 160*self.mil2pix_ratio
         self.coord_central = 160*self.mil2pix_ratio, 160*self.mil2pix_ratio
-        self.db_path = 'D:/Workspace/map/MapData/suzhou.db'
-        # self.db_path = ''
+        # self.db_path = 'D:/Workspace/map/MapData/suzhou.db'
+        self.db_path = ''
         self.dragging_img_set = set()
         self.modify_img_dict = {}
         self.configfile = {}
         self.selected_node_id_int = None
+        self.selected_node_canvas_id_int = None
         self.img_insert = None
+        self.enter_label_mod = False
+        self.using_db = True
+        self.curr_img_rotate = 0.0
         # preference
         self.grid_line_width = 1
         self.coord_line_width = 1
+        self.sqlite_table_name = 'zhdl_map'
+        self.sk_save_path = ''
+
+        self.sk_image = None
+        self.sk_image_idx = 0
+        self.sk_image_panel = None
 
         try:
             with open('mapviewer.cfg', 'r') as f:
                 for line in f.readlines():
                     k, w = line.replace(' ','').split('=')
                     self.configfile[k]=w
-            # if self.configfile['DBPATH']:
-            #     self.db_path = self.configfile['DBPATH']
+            if self.configfile['DBPATH']:
+                self.db_path = self.configfile['DBPATH']
         except:
             print 'no config file exist'
 
@@ -136,7 +153,7 @@ class Mapviewer:
                 self.calc_visible(False)
         except Exception as e:
             print 'stop_drag err'
-            print e
+            traceback.print_exc()
         self.dragged_item = tk.ALL
 
     def drag(self, event):
@@ -146,8 +163,7 @@ class Mapviewer:
             self.total_map_shift = self.total_map_shift[0]-dx/self.scale, self.total_map_shift[1]-dy/self.scale
             curr_img_id = self.canvas.find_withtag('current')
             self.current_coords = xc, yc
-            self.last_canvx, self.last_canvy = xc, yc
-            if self.dragged_item != tk.ALL and self.edit_mod_flag == True:
+            if self.dragged_item != tk.ALL and self.edit_mod_flag==True and self.img_dict[self.dragged_item].fixed==False:
                 # 拖拽编辑模式
                 self.canvas.tag_raise('current')
                 if self.dragged_item not in self.modify_img_dict.keys():
@@ -176,12 +192,47 @@ class Mapviewer:
             print 'drag err'
             print e
 
+    def start_rotate(self, event):
+        if self.edit_mod_flag:
+            self.current_angle = self.canvas.canvasy(event.x)
+
+    def stop_rotate(self, event):
+        if self.edit_mod_flag:
+            try:
+                self.img_dict[self.selected_node_id_int].rot += self.current_rotate*0.1
+                self.calc_visible(False)
+                self.current_rotate = 0.
+                if self.selected_node_id_int not in self.modify_img_dict.keys():
+                    self.modify_img_dict[self.selected_node_id_int] = (0,0)
+            except Exception as e:
+                print e
+
+    def rotate(self, event):
+        if self.edit_mod_flag:
+            ca = self.canvas.canvasx(event.x)
+            self.current_rotate = ca - self.current_angle
+            try:
+                if self.selected_node_id_int != None:
+                    print 'rotating image %s with angle %s'%(self.selected_node_id_int, self.current_rotate)
+                    self.canvas.delete('selected')
+                    self.rotate_img = self.img_dict[self.selected_node_id_int].image.convert('RGBA')
+                    self.rotate_arr = np.array(self.rotate_img)
+                    self.rotate_arr[:,:,3] = (self.rotate_arr[:,:,0]+self.rotate_arr[:,:,1]+self.rotate_arr[:,:,2]!=0)*self.rotate_arr[:,:,3]
+                    self.rotate_img = Image.fromarray(self.rotate_arr.astype('uint8')).resize((int(self.imgsize*self.scale), int(self.imgsize*self.scale))).rotate(self.img_dict[self.selected_node_id_int].theta+self.current_rotate*0.1+self.img_dict[self.selected_node_id_int].rot, expand=True)
+                    self.rotaet_tkimg = ImageTk.PhotoImage(self.rotate_img)
+                    shift = (self.rotate_img.size[0]-self.imgsize*self.scale)/2.
+                    self.canvas.create_image((self.img_dict[self.selected_node_id_int].x-shift, self.img_dict[self.selected_node_id_int].y-shift), image=self.rotaet_tkimg, anchor='nw', tags=('img', self.selected_node_id_int, 'selected'))
+                    self.edit_rotate_val.set('图像：%s，旋转角度：%s°'%(self.selected_node_id_int, self.img_dict[self.selected_node_id_int].rot+self.current_rotate*0.1))
+            except Exception as e:
+                traceback.print_exc()
+                print self.canvas.gettags('current')
+
     def zoomer(self, event):
         if not self.mutex:
             self.mutex = True
-            self.mouse_pos_variable.set('鼠标位置：%s, %s'%(round(self.total_map_shift[0]+self.canvas.canvasx(event.x)/self.scale, 2), round(self.total_map_shift[1]+self.canvas.canvasy(event.y)/self.scale, 2)))
+            self.mouse_pos_variable.set('鼠标位置：%s, %s'%(round(self.total_map_shift[0]+self.canvas.canvasx(event.x)/self.scale, 2), -1*round(self.total_map_shift[1]+self.canvas.canvasy(event.y)/self.scale, 2)))
             if event.delta > 0:
-                if self.scale < 2**4:
+                if self.scale < 2**3:
                     self.scale *= self.factor
                     self.zoom_scale.set('缩放系数：%s'%round(self.scale, 5))
                     for k in self.img_dict.keys():
@@ -198,6 +249,10 @@ class Mapviewer:
                     print 'achieved top'
             elif event.delta <0:
                 if self.scale > 0.5**4:
+                    if self.edit_mod_flag and self.scale/self.factor<=0.2:
+                        tkMessageBox.showwarning('提示', '请先退出编辑模式')
+                        self.mutex = False
+                        return
                     self.scale /= self.factor
                     self.zoom_scale.set('缩放系数：%s'%round(self.scale, 5))
                     for k in self.img_dict.keys():
@@ -218,21 +273,75 @@ class Mapviewer:
                 self.edit_delete_btn.config(state=tk.DISABLED)
             self.mutex = False
 
+    def zoomer_up(self, event):
+        if not self.mutex:
+            self.mutex = True
+            self.mouse_pos_variable.set('鼠标位置：%s, %s'%(round(self.total_map_shift[0]+self.canvas.canvasx(event.x)/self.scale, 2), -1*round(self.total_map_shift[1]+self.canvas.canvasy(event.y)/self.scale, 2)))
+            if self.scale < 2**4:
+                self.scale *= self.factor
+                self.zoom_scale.set('缩放系数：%s'%round(self.scale, 5))
+                for k in self.img_dict.keys():
+                    self.img_dict[k].x *= self.factor
+                    self.img_dict[k].y *= self.factor
+                for i in range(len(self.grid_vert)):
+                    self.grid_vert[i] = (self.grid_vert[i][0]*self.factor, self.grid_vert[i][1]*self.factor, self.grid_vert[i][2]*self.factor, self.grid_vert[i][3]*self.factor)
+                for j in range(len(self.grid_horz)):
+                    self.grid_horz[j] = (self.grid_horz[j][0]*self.factor, self.grid_horz[j][1]*self.factor, self.grid_horz[j][2]*self.factor, self.grid_horz[j][3]*self.factor)
+                self.coord_central = (self.coord_central[0]*self.factor, self.coord_central[1]*self.factor)
+                # self.window = [((self.window[0][0])/self.factor, (self.window[0][1])/self.factor), ((self.window[1][0])/self.factor, (self.window[1][1])/self.factor)]
+                self.redraw()
+            else:
+                print 'achieved top'
+
+            if self.scale <= 0.2:
+                self.edit_delete_var.set('删除选中图像：暂无选中ID')
+                self.edit_delete_flag = False
+                self.edit_delete_btn.config(state=tk.DISABLED)
+            self.mutex = False
+
+    def zoomer_dw(self, event):
+        if not self.mutex:
+            self.mutex = True
+            self.mouse_pos_variable.set('鼠标位置：%s, %s'%(round(self.total_map_shift[0]+self.canvas.canvasx(event.x)/self.scale, 2), -1*round(self.total_map_shift[1]+self.canvas.canvasy(event.y)/self.scale, 2)))
+
+            if self.scale > 0.5**4:
+                if self.edit_mod_flag and self.scale/self.factor<=0.2:
+                    tkMessageBox.showwarning('提示', '请先退出编辑模式')
+                    self.mutex = False
+                    return
+                self.scale /= self.factor
+                self.zoom_scale.set('缩放系数：%s'%round(self.scale, 5))
+                for k in self.img_dict.keys():
+                    self.img_dict[k].x /= self.factor
+                    self.img_dict[k].y /= self.factor
+                for i in range(len(self.grid_vert)):
+                    self.grid_vert[i] = (self.grid_vert[i][0]/self.factor, self.grid_vert[i][1]/self.factor, self.grid_vert[i][2]/self.factor, self.grid_vert[i][3]/self.factor)
+                for j in range(len(self.grid_horz)):
+                    self.grid_horz[j] = (self.grid_horz[j][0]/self.factor, self.grid_horz[j][1]/self.factor, self.grid_horz[j][2]/self.factor, self.grid_horz[j][3]/self.factor)
+                self.coord_central = (self.coord_central[0]/self.factor, self.coord_central[1]/self.factor)
+                # self.window = [((self.window[0][0])*self.factor, (self.window[0][1])*self.factor), ((self.window[1][0])*self.factor, (self.window[1][1])*self.factor)]
+                self.redraw()
+            else:
+                print 'achieved bottom'
+            if self.scale <= 0.2:
+                self.edit_delete_var.set('删除选中图像：暂无选中ID')
+                self.edit_delete_flag = False
+                self.edit_delete_btn.config(state=tk.DISABLED)
+            self.mutex = False
+
     def redraw(self):
         # TODO: num_tks
         self.calc_visible(True)
 
-    def single_click_callback(self, event):
+    def edit_single_click_callback(self, event):
         idx = self.edit_history_listbox.curselection()
-        # if len(idx)>0:
-        #     item = self.edit_history_listbox.get(idx[0])
-        #     pid = int(item.split('  ')[0].split(':')[1])
-        #     for e in self.edit_history_listbox.get(0, tk.END):
-        #         print int(e.split('  ')[0].split(':')[1])
-        #         self.img_dict[int(e.split('  ')[0].split(':')[1])].leave_boundingbox()
-        #     print 'select: %s'%int(e.split('  ')[0].split(':')[1])
-        #     self.img_dict[pid].enter_boundingbox(1)
-        #     self.calc_visible(False)
+        if len(idx)>0:
+            item = self.edit_history_listbox.get(idx[0])
+            pid = int(item.split('  ')[0].split(':')[1])
+            for e in self.edit_history_listbox.get(0, tk.END):
+                self.img_dict[int(e.split('  ')[0].split(':')[1])].leave_boundingbox()
+            self.img_dict[pid].enter_boundingbox(1)
+            self.calc_visible(False)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ 回调函数 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -265,11 +374,11 @@ class Mapviewer:
         global_img.show()
         # toplevel = tk.Toplevel(width=1024, height=int(height//2))
         # toplevel.title('全图预览')
-        # map_canvas = tk.Canvas(toplevel, width=1024, height=int(height//2))
+        # topframe = tk.Frame(toplevel)
+        # topframe.grid()
+        # map_canvas = tk.Canvas(topframe, width=1024, height=int(height//2))
         # map_canvas.create_image(0, 0, image=ImageTk.PhotoImage(global_img.resize((1024,int(height//2)))))
-        # map_canvas.pack()
-        # global_canvas.create_image(1, 1 ,ImageTk.PhotoImage(global_img), anchor='nw')
-        # global_canvas.pack()
+        # map_canvas.grid()
 
     def mouse_pos_callback(self, event):
         self.mouse_pos_variable.set('鼠标位置：%s, %s'%(round(self.total_map_shift[0]+self.canvas.canvasx(event.x)/self.scale, 2), -1*round(self.total_map_shift[1]+self.canvas.canvasy(event.y)/self.scale, 2)))
@@ -283,13 +392,26 @@ class Mapviewer:
             if result:
                 curr_img_id = int(result[1])
                 self.selected_node_id_int = curr_img_id
+                self.selected_node_canvas_id_int = self.canvas.find_withtag('current')[0]
                 self.selected_node_id.set('选中节点ID：%s'%curr_img_id)
                 self.selected_node_pos.set('选中节点位置：%s，%s'%(round(self.img_dict[curr_img_id].ox, 1), -1*round(self.img_dict[curr_img_id].oy, 1)))
                 self.edit_delete_var.set('删除选中图像：%s'%curr_img_id)
                 self.edit_delete_flag = True
                 self.edit_delete_btn.config(state=tk.NORMAL)
+                for k in self.img_dict.keys():
+                    self.img_dict[k].leave_boundingbox()
+                self.img_dict[curr_img_id].enter_boundingbox(1)
+                self.canvas.tag_raise('current')
+                self.calc_visible(False)
             else:
+                for k in self.img_dict.keys():
+                    self.img_dict[k].leave_boundingbox()                
+                self.selected_node_id_int = None
+                self.selected_node_canvas_id_int = None
+                self.selected_node_id.set('选中节点ID：-')
+                self.selected_node_pos.set('选中节点位置：-')
                 self.edit_delete_var.set('删除选中图像：暂无选中ID')
+                self.edit_rotate_val.set('当前无旋转图像')
                 self.edit_delete_flag = False
                 self.edit_delete_btn.config(state=tk.DISABLED)
         except Exception as e:
@@ -298,6 +420,8 @@ class Mapviewer:
     def mil2pix_btn_callback(self):
         self.mil2pix_ratio = self.mil2pix.get()
         self.reinit_everything()
+        self.center_btn_callback()
+        self.grid_gap_btn_callback()
 
     def center_btn_callback(self):
         # TODO: fix bug
@@ -322,55 +446,69 @@ class Mapviewer:
 
     def edit_mod_callback(self):
         if self.edit_mod_flag==False and self.scale<0.2:
-            tkMessageBox.showinfo('提示', '当前缩放尺度不支持拖拽编辑')
+            tkMessageBox.showinfo('提示', '当前缩放尺度不支持编辑')
             return
         self.edit_mod_flag = not self.edit_mod_flag
         if self.edit_mod_flag:
-            self.edit_mod_var.set('退出拖拽编辑模式')
+            self.edit_mod_var.set('退出编辑模式')
+            for item in self.dragging_img_set:
+                self.img_dict[item].leave_boundingbox()
+                self.img_dict[item].enter_boundingbox(0)
+            self.calc_visible(False)
         else:
-            self.edit_mod_var.set('进入拖拽编辑模式')
+            self.edit_mod_var.set('进入编辑模式')
             for item in self.dragging_img_set:
                 self.img_dict[item].leave_boundingbox()
             self.edit_history_listbox.delete(0,tk.END)
             for k in self.modify_img_dict.keys():
-                self.edit_history_listbox.insert(tk.END, 'id:%s  x:%s  y:%s'%(k, round(self.modify_img_dict[k][0],2), round(self.modify_img_dict[k][1],2)))
+                self.edit_history_listbox.insert(tk.END, 'id:%s  x:%s  y:%s  θ:%s'%(k, round(self.modify_img_dict[k][0],1), -1*round(self.modify_img_dict[k][1],1), self.img_dict[k].rot))
             self.dragging_img_set = set()
             self.calc_visible(False)
-        # self.edit_mod_var.set('退出拖拽编辑模式') if self.edit_mod_flag else self.edit_mod_var.set('进入拖拽编辑模式')
+        # self.edit_mod_var.set('退出拖拽编辑模式') if self.edit_mod_flag else self.edit_mod_var.set('进入编辑模式')
 
     def edit_commit_callback(self):
-        result = tkMessageBox.askquestion('提示', '确认提交修改？', icon='warning')
-        if result == 'yes':
-            if self.edit_mod_flag:
-                tkMessageBox.showwarning('提示', '请先退出拖拽编辑模式')
-                return
-            if len(self.edit_history_listbox.get(0, tk.END))==0:
-                tkMessageBox.showinfo('提示', '当前无修改历史')
-                return
-            try:
-                conn = sqlite3.connect(self.db_path)
-                curs = conn.cursor()
-                # res = curs.execute('select id, x, y, heading, processed_image, raw_image from zhdl_map')
-            except Exception as e:
-                tkMessageBox.showinfo('提示', '请在选项中正确配置数据库文件地址')
-            try:
-                # for item in self.edit_history_listbox.get(0, tk.END):
-                #     imgobj = self.img_dict[int(item.split('  ')[0].split(':')[1])]
-                #     shiftx = float(item.split('  ')[1].split(':')[1])
-                #     shifty = float(item.split('  ')[2].split(':')[1])
-                #     curs.execute('update zhdl_map set x=%s, y=%s where id=%s'%(imgobj.ox+shiftx, imgobj.oy+shifty, imgobj.idx))
-                #     conn.commit()
-                for k in self.modify_img_dict:
-                    curs.execute('update zhdl_map set x=%s, y=%s where id=%s'%(self.img_dict[k].ox+self.modify_img_dict[k][0], -1*(self.img_dict[k].oy+self.modify_img_dict[k][1]), k))
-                    conn.commit()
-                conn.close()
-                tkMessageBox.showinfo('提示', '提交修改成功')
-                self.edit_history_listbox.delete(0, tk.END)
-                self.modify_img_dict = {}
-            except:
-                tkMessageBox.showerror('提示', '提交修改失败')
-            else:
-                pass
+        if self.using_db:
+            result = tkMessageBox.askquestion('提示', '确认提交修改？', icon='warning')
+            if result == 'yes':
+                if self.edit_mod_flag:
+                    tkMessageBox.showwarning('提示', '请先退出编辑模式')
+                    return
+                if len(self.edit_history_listbox.get(0, tk.END))==0:
+                    tkMessageBox.showinfo('提示', '当前无修改历史')
+                    return
+                try:
+                    conn = sqlite3.connect(self.db_path)
+                    curs = conn.cursor()
+                    # res = curs.execute('select id, x, y, heading, processed_image, raw_image from zhdl_map')
+                except Exception as e:
+                    tkMessageBox.showinfo('提示', '请在选项中正确配置数据库文件地址')
+                try:
+                    # for item in self.edit_history_listbox.get(0, tk.END):
+                    #     imgobj = self.img_dict[int(item.split('  ')[0].split(':')[1])]
+                    #     shiftx = float(item.split('  ')[1].split(':')[1])
+                    #     shifty = float(item.split('  ')[2].split(':')[1])
+                    #     curs.execute('update zhdl_map set x=%s, y=%s where id=%s'%(imgobj.ox+shiftx, imgobj.oy+shifty, imgobj.idx))
+                    #     conn.commit()
+                    for k in self.modify_img_dict:
+                        # rot = abs(self.img_dict[k].rot)%90
+                        # if rot < 45:
+                        #     rat = 1/math.sin(((90-rot)/180.)*math.pi)
+                        # else:
+                        #     rat = 1/math.sin(((rot)/180.)*math.pi)
+                        # rot_shift = -1*self.mil2pix_ratio*(320*(rat-1)/2)
+                        rot_shift = 0
+                        curs.execute('update zhdl_map set x=%s, y=%s, heading=%s where id=%s'%(self.img_dict[k].ox+self.modify_img_dict[k][0]+rot_shift, -1*(self.img_dict[k].oy+self.modify_img_dict[k][1]+rot_shift), self.img_dict[k].theta+self.img_dict[k].rot, k))
+                        conn.commit()
+                    conn.close()
+                    tkMessageBox.showinfo('提示', '提交修改成功')
+                    self.edit_history_listbox.delete(0, tk.END)
+                    self.modify_img_dict = {}
+                except Exception as e:
+                    tkMessageBox.showerror('提示', '提交修改失败\n%s'%str(e))
+                else:
+                    pass
+        else:
+            tkMessageBox.showinfo('提示', '当前使用文件源，暂未实现回传功能')
 
     def edit_abort_callback(self):
         if len(self.edit_history_listbox.get(0, tk.END))==0:
@@ -382,22 +520,34 @@ class Mapviewer:
         #     self.img_dict[k].x = (self.img_dict[k].ox+self.total_map_shift[0])/self.scale
         #     self.img_dict[k].y = (self.img_dict[k].oy+self.total_map_shift[1])/self.scale
         # self.calc_visible(False)
-        self.reinit_everything()
+        for item in self.edit_history_listbox.get(0, tk.END):
+            idx, dx, dy, dtheta = [e.split(':')[1] for e in item.split('  ')]
+            idx, dx, dy, dtheta = int(idx), float(dx), -1*float(dy), float(dtheta)
+            self.img_dict[idx].x -= dx*self.scale
+            self.img_dict[idx].y -= dy*self.scale
+            self.img_dict[idx].rot -= dtheta
+        self.calc_visible(False)
+        # self.reinit_everything()
         self.edit_history_listbox.delete(0,tk.END)
+        self.dragging_img_set = set()
+        self.modify_img_dict = {}
 
     def edit_delete_callback(self):
-        result = tkMessageBox.askquestion('警告', '确认删除选中图像：%s？'%self.selected_node_id_int, icon='warning')
-        if result == 'yes':
-            try:
-                conn = sqlite3.connect(self.db_path)
-                curs = conn.cursor()
-                curs.execute('delete from zhdl_map where id=%s'%self.selected_node_id_int)
-                conn.commit()
-                conn.close()
-                tkMessageBox.showinfo('提示', '删除成功')
-            except Exception as e:
-                print e
-                tkMessageBox.showerror('错误', '删除失败')
+        if self.using_db:
+            result = tkMessageBox.askquestion('警告', '确认删除选中图像：%s？'%self.selected_node_id_int, icon='warning')
+            if result == 'yes':
+                try:
+                    conn = sqlite3.connect(self.db_path)
+                    curs = conn.cursor()
+                    curs.execute('delete from zhdl_map where id=%s'%self.selected_node_id_int)
+                    conn.commit()
+                    conn.close()
+                    tkMessageBox.showinfo('提示', '删除成功')
+                except Exception as e:
+                    print e
+                    tkMessageBox.showerror('错误', '删除失败')
+        else:
+            tkMessageBox.showinfo('提示', '当前使用文件源，暂未实现回传功能')
 
     def open_history_callback(self):
         pass
@@ -434,11 +584,11 @@ class Mapviewer:
                 try:
                     conn = sqlite3.connect(self.db_path)
                     curs = conn.cursor()
-                    curs.execute('insert into zhdl_map (id, x, y, heading, processed_image, raw_image) values (%s,%s,%s,%s,%s,%s)'%(
+                    curs.execute('insert into zhdl_map values (?,?,?,?,?,?)',(
                         self.img_insert.idx, 
                         self.img_insert.x+self.total_map_shift[0], 
-                        self.img_insert.y+self.total_map_shift[1], 
-                        self.img_insert.theta, 
+                        -1*(self.img_insert.y+self.total_map_shift[1]), 
+                        self.img_insert.theta,
                         None, 
                         np.array(self.img_insert.image).reshape((320*320))
                     ))
@@ -487,6 +637,14 @@ class Mapviewer:
         coord_width_lbl.grid(row=0, column=0, pady=2, padx=2)
         coord_width_ent.grid(row=0, column=1, pady=2, padx=2)
 
+        sk_path_frame = tk.Frame(toplevel)
+        sk_path_frame.grid(pady=2)
+        self.sk_path_val.set(self.sk_save_path)
+        sk_path_lbl = tk.Button(sk_path_frame, text='图像采集存储目录')
+        sk_path_ent = tk.Entry(sk_path_frame, textvariable=self.sk_path_val)
+        sk_path_lbl.grid(row=0, column=0, pady=2, padx=2)
+        sk_path_ent.grid(row=0, column=1, pady=2, padx=2)
+
         donothing_4_1 = tk.Frame(toplevel, height=8, width=120)
         donothing_4_1.grid()
         donothing_4_2 = tk.Frame(toplevel, bg='#555', height=1, width=220)
@@ -503,6 +661,61 @@ class Mapviewer:
         self.calc_visible(False)
 
     def export_to_sqlite_callback(self):
+        self.ex_sql_export = tk.Toplevel()
+
+        sql_path_lbl_frame = tk.Frame(self.ex_sql_export)
+        sql_path_lbl_frame.grid(pady=2)
+        sql_path_lb0 = tk.Label(sql_path_lbl_frame, text='Sqlite.db文件路径：')
+        sql_path_lbl = tk.Label(sql_path_lbl_frame, textvariable=self.sql_path_val)
+        sql_path_lb0.grid(row=0, column=0, pady=2)
+        sql_path_lbl.grid(row=0, column=1, pady=2)
+
+        donothing_1_1 = tk.Frame(self.ex_sql_export, height=8, width=640)
+        donothing_1_1.grid()
+        donothing_1_2 = tk.Frame(self.ex_sql_export, bg='#555', height=1, width=640)
+        donothing_1_2.grid()
+        donothing_1_3 = tk.Frame(self.ex_sql_export, height=8, width=640)
+        donothing_1_3.grid()
+
+        sql_table_frame = tk.Frame(self.ex_sql_export)
+        sql_table_frame.grid(pady=2)
+        sql_table_lbl = tk.Label(sql_table_frame, text='Sqlite表名')
+        sql_table_ent = tk.Entry(sql_table_frame, textvariable=self.sql_table_val)
+        sql_table_lbl.grid(row=0, column=0, padx=2)
+        sql_table_ent.grid(row=0, column=1, padx=2)
+
+        sample_equipnum_frame = tk.Frame(self.ex_sql_export)
+        sample_equipnum_frame.grid(pady=2)
+        sample_equipnum_lbl = tk.Label(sample_equipnum_frame, text='采集设备号')
+        sample_equipnum_ent = tk.Entry(sample_equipnum_frame, textvariable=self.sample_equipnum_val)
+        sample_equipnum_lbl.grid(row=0, column=0, pady=2)
+        sample_equipnum_ent.grid(row=0, column=1, pady=2)
+
+        sample_rate_frame = tk.Frame(self.ex_sql_export)
+        sample_rate_frame.grid(pady=2)
+        sample_rate_lbl = tk.Label(sample_rate_frame, text='采集速度')
+        sample_rate_ent = tk.Entry(sample_rate_frame, textvariable=self.sample_rate_val)
+        sample_rate_lbl.grid(row=0, column=0, pady=2)
+        sample_rate_ent.grid(row=0, column=1, pady=2)
+
+        donothing_2_1 = tk.Frame(self.ex_sql_export, height=8, width=640)
+        donothing_2_1.grid()
+        donothing_2_2 = tk.Frame(self.ex_sql_export, bg='#555', height=1, width=640)
+        donothing_2_2.grid()
+        donothing_2_3 = tk.Frame(self.ex_sql_export, height=8, width=640)
+        donothing_2_3.grid()
+
+        ex_btn_frame = tk.Frame(self.ex_sql_export)
+        ex_btn_frame.grid(pady=2)
+        sql_path_btn = tk.Button(ex_btn_frame, text='选择Sqlite', command=self.sql_path_btn_callback)
+        sql_path_btn.grid(row=0, column=1, padx=2, pady=2)
+        export_commit_btn = tk.Button(ex_btn_frame, text='启动导入', command=self.export_commit_btn_callback)
+        export_commit_btn.grid(row=0, column=2, padx=2, pady=2)
+
+        donothing_3_3 = tk.Frame(self.ex_sql_export, height=8, width=480)
+        donothing_3_3.grid()
+
+    def folder_to_sqlite_callback(self):
         self.tl_sql_export = tk.Toplevel()
         # self.img_path_val = tk.StringVar()
         # self.sql_path_val = tk.StringVar()
@@ -564,7 +777,7 @@ class Mapviewer:
         img_path_btn.grid(row=0, column=0, padx=2, pady=2)
         sql_path_btn = tk.Button(tl_btn_frame, text='选择Sqlite', command=self.sql_path_btn_callback)
         sql_path_btn.grid(row=0, column=1, padx=2, pady=2)
-        export_commit_btn = tk.Button(tl_btn_frame, text='启动导入', command=self.export_commit_btn_callback)
+        export_commit_btn = tk.Button(tl_btn_frame, text='启动导入', command=self.folder_to_sqlite_commit_btn_callback)
         export_commit_btn.grid(row=0, column=2, padx=2, pady=2)
 
         donothing_3_3 = tk.Frame(self.tl_sql_export, height=8, width=480)
@@ -579,6 +792,46 @@ class Mapviewer:
         self.sql_path_val.set(sql_path)
 
     def export_commit_btn_callback(self):
+        if self.sql_table_val.get()!='zhdl_map':
+            tkMessageBox.showerror('错误', '目前只支持数据表名：zhdl_map')
+            return
+        if self.sample_equipnum_val=='':
+            tkMessageBox.showerror('错误', '请输入有效设备名')
+            return
+        if self.sample_rate_val>0. and self.sample_rate_val<5.:
+            tkMessageBox.showerror('错误', '采集速度必须处于有效范围内 ( 0~5m/s ) ')
+            return
+        try:
+            conn = sqlite3.connect(self.sql_path_val.get())
+            curs = conn.cursor()
+            cnt = 0
+            for k in self.img_dict.keys():
+                try:
+                    if self.img_dict[k].image_back!=None:
+                        img = self.img_dict[k].image_back
+                    else:
+                        img = self.img_dict[k].image
+                    print np.array(img).shape
+                    curs.execute('insert into zhdl_map values (?,?,?,?,?,?)',(
+                        k,
+                        self.img_dict[k].ox,
+                        -1*self.img_dict[k].oy,
+                        self.img_dict[k].theta,
+                        None,
+                        buffer(img.tobytes()),
+                        ))
+                    cnt += 1
+                except Exception as e:
+                    pass
+            conn.commit()
+            conn.close()
+            tkMessageBox.showinfo('提示', '导入数据库成功，共导入 %s 张图像'%cnt)
+        except Exception as e:
+            traceback.print_exc()
+            tkMessageBox.showerror('错误', '导入数据库失败\n%s'%str(e))
+            return            
+
+    def folder_to_sqlite_commit_btn_callback(self):
         valid_flag = True
         if self.sql_table_val.get()!='zhdl_map':
             tkMessageBox.showerror('错误', '目前只支持数据表名：zhdl_map')
@@ -592,15 +845,21 @@ class Mapviewer:
         try:
             self.reinit_everything(load_source='folder')
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = sqlite3.connect(self.sql_path_val.get())
                 curs = conn.cursor()
                 for k in self.img_dict.keys():
-                    curs.execute('insert into zhdl_map (x, y, heading, raw_image) values (%s, %s, %s, "%s")'%(
-                            self.img_dict[k].ox,
-                            self.img_dict[k].oy,
-                            self.img_dict[k].theta,
-                            str(np.array(self.img_dict[k].image.resize((320,320))).reshape((320*320))),
-                        ))
+                    if self.img_dict[k].image_back!=None:
+                        img = self.img_dict[k].image_back
+                    else:
+                        img = self.img_dict[k].image
+                    curs.execute('insert into zhdl_map values (?,?,?,?,?,?)',(
+                        k,
+                        self.img_dict[k].ox,
+                        -1*self.img_dict[k].oy,
+                        self.img_dict[k].theta,
+                        None,
+                        buffer(img.resize((320,320)).tobytes()),
+                    ))
                 conn.commit()
                 conn.close()
                 tkMessageBox.showinfo('提示', '导入数据库成功')
@@ -612,7 +871,202 @@ class Mapviewer:
             traceback.print_exc()
             tkMessageBox.showerror('错误', '图片读取失败\n%s'%str(e))
             return
-             
+
+    def import_labeled_set_callback(self):
+        self.using_db = False
+        if not self.enter_label_mod:
+            self.enter_label_mod = True
+            self.img_dict = {}
+            self.grid_horz = []
+            self.grid_vert = []
+            self.scale = 1.0
+            self.maxx, self.maxy = 0, 0
+            self.total_map_shift = 0, 0
+        img_path = tkFileDialog.askdirectory()
+        fs = []
+        # TODO：添加根据固定文件名格式判断图像是否为有效地图文件
+        for _,_,tfs in os.walk(img_path):
+            for f in tfs:
+                if f.lower().endswith('.bmp'):
+                    fs.append(f)
+        cnt = 0
+        for f in fs:
+            try:
+                # img = Image.open(img_path+'/'+f).resize((self.imgsize,self.imgsize))
+                img = Image.open(img_path+'/'+f)
+                idx, curx, cury, theta = int(f.split('_')[0]), float(f.split('_')[1]), float(f.split('_')[2]), float(f.split('_')[3].split('.')[0])
+                if idx in self.img_dict.keys():
+                    continue
+                imgobj = Imgobj(idx=idx,
+                                image=img,
+                                x=curx,
+                                y=-1*cury,
+                                theta=theta)
+                imgobj.labeled = True
+                imgobj.x = (imgobj.x-self.total_map_shift[0])*self.scale
+                imgobj.y = (imgobj.y-self.total_map_shift[1])*self.scale
+                self.img_dict[idx] = imgobj
+                self.maxx = max(self.maxx, curx)
+                self.maxy = max(self.maxy, cury)
+                cnt += 1
+            except:
+                pass
+        if cnt == 0:
+            tkMessageBox.showinfo('提示', '当前文件夹无有效地图数据文件')
+            return  
+        tkMessageBox.showinfo('提示', '标注集读取成功，新增 %s 张样本'%cnt)
+        self.calc_visible(False)
+
+    def import_raw_set_callback(self):
+        self.using_db = False
+        if not self.enter_label_mod:
+            self.enter_label_mod = True
+            self.img_dict = {}
+            self.grid_horz = []
+            self.grid_vert = []
+            self.scale = 1.0
+            self.maxx, self.maxy = 0, 0
+            self.total_map_shift = 0, 0
+        img_path = tkFileDialog.askdirectory()
+        fs = []
+        # TODO：添加根据固定文件名格式判断图像是否为有效地图文件
+        for _,_,tfs in os.walk(img_path):
+            for f in tfs:
+                if f.lower().endswith('.bmp'):
+                    fs.append(f)
+        cnt = 0
+        for f in fs:
+            try:
+                # img = Image.open(img_path+'/'+f).resize((self.imgsize,self.imgsize))
+                img = Image.open(img_path+'/'+f)
+                idx, curx, cury, theta = int(f.split('_')[0]), float(f.split('_')[1]), float(f.split('_')[2]), float(f.split('_')[3].split('.')[0])
+                if idx in self.img_dict.keys():
+                    continue
+                imgobj = Imgobj(idx=idx,
+                                image=img,
+                                x=curx,
+                                y=-1*cury,
+                                theta=theta)
+                imgobj.labeled = False
+                imgobj.x = (imgobj.x-self.total_map_shift[0])*self.scale
+                imgobj.y = (imgobj.y-self.total_map_shift[1])*self.scale
+                self.img_dict[idx] = imgobj
+                self.maxx = max(self.maxx, curx)
+                self.maxy = max(self.maxy, cury)
+                cnt += 1
+            except:
+                pass
+        if cnt == 0:
+            tkMessageBox.showinfo('提示', '当前文件夹无有效地图数据文件')
+            return            
+        tkMessageBox.showinfo('提示', '未标注集读取成功，新增 %s 张样本'%cnt)
+        self.calc_visible(False)
+
+    def fix_labeled_set_callback(self):
+        # self.enter_label_mod_lock = not self.enter_label_mod_lock
+        for k in self.img_dict.keys():
+            if self.img_dict[k].labeled:
+                self.img_dict[k].fixed = True
+                self.img_dict[k].enter_boundingbox(2)
+
+    def labeled_irredundancy_callback(self):
+        tkMessageBox.showinfo('提示', 'function not applied yet')
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ 采集功能 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+
+    def open_socket_callback(self):
+        self.sk_top = tk.Toplevel()
+        self.sk_top.resizable(width=False, height=False)
+        self.sk_canvas = tk.Canvas(self.sk_top, width=640, height=480)
+        self.sk_canvas.sk_canvas_image = ImageTk.PhotoImage(Image.fromarray(np.zeros((480, 640), dtype='uint8')).resize((640, 480)))
+        self.sk_canvas_panel = self.sk_canvas.create_image(0, 0, image=self.sk_canvas.sk_canvas_image, anchor='nw', tags=('sk_img'))
+        self.sk_canvas.grid(pady=2)
+        self.sk_frame = tk.Frame(self.sk_top)
+        self.sk_frame.grid(pady=2)
+
+        self.sk_canvas.create_line(0, 240, 640, 240, fill='#9a9a66', width=1, dash=(5,5), tags='groundtruth')
+        self.sk_canvas.create_line(320, 0, 320, 480, fill='#9a9a66', width=1, dash=(5,5), tags='groundtruth')
+        self.sk_canvas.tag_raise('groundtruth')
+
+        self.sk_x_lbl = tk.Label(self.sk_frame, text='x: ')
+        self.sk_x_lbl.grid(row=0, column=0, padx=2)
+        self.sk_x_val = tk.DoubleVar()
+        self.sk_x_val.set(0.)
+        self.sk_x_ent = tk.Entry(self.sk_frame, textvariable = self.sk_x_val)
+        self.sk_x_ent.grid(row=0, column=1, padx=2)
+
+        self.sk_y_lbl = tk.Label(self.sk_frame, text='y: ')
+        self.sk_y_lbl.grid(row=0, column=2, padx=2)
+        self.sk_y_val = tk.DoubleVar()
+        self.sk_y_val.set(0.)
+        self.sk_y_ent = tk.Entry(self.sk_frame, textvariable = self.sk_y_val)
+        self.sk_y_ent.grid(row=0, column=3, padx=2)
+
+        self.sk_t_lbl = tk.Label(self.sk_frame, text='θ: ')
+        self.sk_t_lbl.grid(row=0, column=4, padx=2)
+        self.sk_t_val = tk.DoubleVar()
+        self.sk_t_val.set(0.)
+        self.sk_t_ent = tk.Entry(self.sk_frame, textvariable = self.sk_t_val)
+        self.sk_t_ent.grid(row=0, column=5, padx=2)
+
+        self.sk_commit_btn = tk.Button(self.sk_frame, text='导入图像', command=self.sk_commit_btn_callback)
+        self.sk_commit_btn.grid(row=0, column=6, padx=2)
+
+        socket_loop_thread = threading.Thread(target=self.socket_loop)
+        socket_loop_thread.start()
+
+        self.sk_top.protocol("WM_DELETE_WINDOW", on_sk_closing)
+
+    def on_sk_closing(self):
+        
+
+    def socket_loop(self):
+        self.sock = sk.socket(sk.AF_INET, sk.SOCK_DGRAM)
+        self.sock.bind(('192.168.1.11', 20014))
+        # self.sock.bind(('127.0.0.1', 20014))
+
+        self.sk_frame_id = 0
+        self.sk_frame_id_curr = 0
+        self.sk_line_idx = 0
+        self.sk_line_idx_prev = 0
+        self.n_add = 0
+
+        try:
+            self.bmp = ''
+            cnt = 0
+            while True:
+                try:
+                    data, _ = self.sock.recvfrom(672)
+                    if len(data) != 672:
+                        continue
+                    self.sk_frame_id = ord(data[6]) * 256 + ord(data[7])
+                    self.sk_line_idx = ord(data[8]) * 256 + ord(data[9])
+                    self.bmp += data[32:]
+                    if self.sk_line_idx == 479:
+                        self.sk_frame_id_curr = self.sk_frame_id
+                        arr = np.fromstring(self.bmp, dtype='uint8').reshape((480,640))
+                        self.sk_image = Image.fromarray(arr)
+                        self.sk_canvas.sk_canvas_image = ImageTk.PhotoImage(self.sk_image)
+                        self.sk_canvas.itemconfig(self.sk_canvas_panel, image=self.sk_canvas.sk_canvas_image)
+                        # self.sk_image = ImageTk.PhotoImage()
+                        self.sk_canvas.tag_raise('groundtruth')
+                        self.bmp = ''
+                except Exception as e:
+                    self.bmp = ''
+                    print e
+        except Exception as e:
+            traceback.print_exc()
+
+
+    def sk_commit_btn_callback(self):
+        if self.sk_image == None:
+            tkMessageBox.showwarning('错误', '暂无图像')
+        else:
+            filename = '%s,%s,%s,%s.bmp'%(self.sk_image_idx, self.sk_x_val.get(), self.sk_y_val.get(), self.sk_t_val.get())
+            self.sk_image.save(os.join(self.sk_save_path, filename))
+            self.sk_image_idx += 1
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ 功能函数 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -641,6 +1095,8 @@ class Mapviewer:
         self.modify_img_dict = {}
         self.edit_history_listbox.delete(0, tk.END)
 
+        self.zoom_scale.set('缩放系数：1.0')
+
         self.imgsize = int(320*self.mil2pix_ratio)
         if load_source=='db':
             self.img_load_db()
@@ -651,12 +1107,15 @@ class Mapviewer:
         self.grid_load()
 
     def img_load_folder(self):
+        self.using_db = False
+        self.enter_label_mod = False
         self.img_dict = {}
         for _,_,fs in os.walk(self.img_path_val.get()):
             img_cnt = 0
             for c, f in enumerate(fs):
-                img = Image.open(self.img_path_val.get()+'/'+f).resize((self.imgsize,self.imgsize))
-                idx, curx, cury, theta = float(f.split('_')[0]), float(f.split('_')[1]), float(f.split('_')[2]), float(f.split('_')[3].split('.')[0])
+                # img = Image.open(self.img_path_val.get()+'/'+f).resize((self.imgsize,self.imgsize))
+                img = Image.open(self.img_path_val.get()+'/'+f)
+                idx, curx, cury, theta = int(f.split('_')[0]), float(f.split('_')[1]), float(f.split('_')[2]), float(f.split('_')[3].split('.')[0])
                 imgobj = Imgobj(idx=idx,
                                 image=img,
                                 x=curx,
@@ -669,7 +1128,8 @@ class Mapviewer:
             print 'current map read finished with sample number %s.'%img_cnt
 
     def img_load_db(self):
-        # conn = sqlite3.connect('D:/Workspace/map/MapData/suzhou.db')
+        self.using_db = True
+        self.enter_label_mod = False
         try:
             conn = sqlite3.connect(self.db_path)
             curs = conn.cursor()
@@ -693,29 +1153,15 @@ class Mapviewer:
                 except Exception as e:
                     print 'current map load finished with sample number %s.'%img_cnt
                     break
+            conn.close()
         except Exception as e:
             tkMessageBox.showinfo('提示', '请在选项中正确配置数据库文件地址')
             res = iter([])
-        finally:
-            conn.close()
 
     def grid_load(self):
         self.grid_horz = []
         self.grid_vert = []
         cx, cy = self.coord_central
-        print self.coord_central
-        # for i in range(int(self.maxx//self.x_axis_gap_val)):
-        #     # 横向分布的竖线
-        #     self.grid_horz.append(((i*self.x_axis_gap_val+self.imgsize//2)*self.scale,
-        #                         -1e7,
-        #                         (i*self.x_axis_gap_val+self.imgsize//2)*self.scale,
-        #                         (1e7)*self.scale))
-        # for j in range(int(self.maxy//self.y_axis_gap_val)):
-        #     # 纵向分布的横线
-        #     self.grid_vert.append((-1e7,
-        #                         -1*(j*self.y_axis_gap_val-self.imgsize//2)*self.scale,
-        #                         (1e7)*self.scale,
-        #                         -1*(j*self.y_axis_gap_val-self.imgsize//2)*self.scale))
         for i in range(int(self.maxx//(self.x_axis_gap_val))):
             self.grid_horz.append((cx+(i*self.x_axis_gap_val)*self.scale,
                                 -1e7,
@@ -765,7 +1211,7 @@ class Mapviewer:
 
     def calc_visible(self, is_scale):
         print 'total shift: %s,%s'%(self.total_map_shift)
-        size = int(self.imgsize*self.scale)
+        # size = int(self.imgsize*self.scale)
         show_cnt = 0
         self.canvas.delete(tk.ALL)
         self.tk_dict = {}
@@ -778,19 +1224,35 @@ class Mapviewer:
                     # pass 
                 if self.scale<0.1 and show_cnt%3!=0:
                     continue
-                if is_scale:
-                    self.tk_dict[k] = ImageTk.PhotoImage(self.img_dict[k].image.resize((size, size)))
+                size = int(self.img_dict[k].image.size[0]*self.scale*self.mil2pix_ratio)
+                # if self.img_dict[k].rot != 0:
+                if self.scale>=0.75:
+                    swap_arr = np.array(self.img_dict[k].image.convert('RGBA'))
+                    swap_arr[:,:,3] = (swap_arr[:,:,0]+swap_arr[:,:,1]+swap_arr[:,:,2]!=0)*swap_arr[:,:,3]
+                    swap_img = Image.fromarray(swap_arr.astype('uint8')).rotate(self.img_dict[k].rot+self.img_dict[k].theta, expand=True)
+                    swap_siz = int(swap_img.size[0]*self.scale*self.mil2pix_ratio)
+                    self.tk_dict[k] = ImageTk.PhotoImage(swap_img.resize((swap_siz, swap_siz), resample=Image.LANCZOS))
                 else:
-                    self.tk_dict[k] = ImageTk.PhotoImage(self.img_dict[k].image.resize((size, size)))
+                    if self.img_dict[k].image_back != None:
+                        self.tk_dict[k] = ImageTk.PhotoImage(self.img_dict[k].image.resize((size, size), resample=Image.LANCZOS))
+                    else:
+                        self.tk_dict[k] = ImageTk.PhotoImage(self.img_dict[k].image.resize((size, size)))
             else:
                 pass
         for k in sorted(self.tk_dict.keys()):
-                # if is_scale:
-                #     self.canvas.create_image(self.img_dict[k].x*self.scale, self.img_dict[k].y*self.scale, image=self.tk_dict[k], anchor='nw', tags=('img', k))
-                # else:
-                self.canvas.create_image(self.img_dict[k].x, self.img_dict[k].y, image=self.tk_dict[k], anchor='nw', tags=('img', k))
+            # if self.img_dict[k].rot != 0.:
+            shift = (self.tk_dict[k].width()-self.imgsize*self.scale)//2
+            if k == self.selected_node_id_int:
+                self.canvas.create_image(self.img_dict[k].x-shift, self.img_dict[k].y-shift, image=self.tk_dict[k], anchor='nw', tags=('img', k, 'selected'))
+            else:
+                self.canvas.create_image(self.img_dict[k].x-shift, self.img_dict[k].y-shift, image=self.tk_dict[k], anchor='nw', tags=('img', k))
+            # else:
+            #     if k == self.selected_node_id_int:
+            #         self.canvas.create_image(self.img_dict[k].x, self.img_dict[k].y, image=self.tk_dict[k], anchor='nw', tags=('img', k, 'selected'))
+            #     else:
+            #         self.canvas.create_image(self.img_dict[k].x, self.img_dict[k].y, image=self.tk_dict[k], anchor='nw', tags=('img', k))
         if self.show_grid_flag:
-            for e in self.grid_vert:
+            for e in self.grid_vert: 
                 self.canvas.create_line(e[0], e[1], e[2], e[3], fill='purple', width=self.grid_line_width, tags='coordline')
             for e in self.grid_horz:
                 self.canvas.create_line(e[0], e[1], e[2], e[3], fill='purple', width=self.grid_line_width, tags='coordline')
@@ -798,20 +1260,27 @@ class Mapviewer:
         self.canvas.create_line(self.coord_central[0],-1e7,self.coord_central[0],1e7, width=self.coord_line_width, fill='blue', tags='baseline')
         self.canvas.create_line(-1e7,self.coord_central[1],1e7,self.coord_central[1], width=self.coord_line_width, fill='blue', tags='baseline')
         self.canvas.tag_raise('baseline')
-        print 'current showing %s tiles with size %s, scale %s'%(show_cnt, size, self.scale)
+        # print 'current showing %s tiles with size %s, scale %s'%(show_cnt, size, self.scale)
 
     def init_binding(self):
         self.canvas.bind('<ButtonPress-1>', self.start_drag)
         self.canvas.bind('<ButtonRelease-1>', self.stop_drag)
         self.canvas.bind('<B1-Motion>', self.drag)
+        self.canvas.bind('<ButtonPress-3>', self.start_rotate)
+        self.canvas.bind('<ButtonRelease-3>', self.stop_rotate)
+        self.canvas.bind('<B3-Motion>', self.rotate)
         self.canvas.bind_all('<MouseWheel>', self.zoomer)
+        self.canvas.bind('<Button-4>', self.zoomer_up)
+        self.canvas.bind('<Button-5>', self.zoomer_dw)
         self.canvas.bind('<Motion>', self.mouse_pos_callback)
         self.canvas.bind('<Double-Button-1>', self.mouse_db_click_callback)
-        self.edit_history_listbox.bind('<Button-1>', self.single_click_callback)
+        self.edit_history_listbox.bind('<Button-1>', self.edit_single_click_callback)
 
     def run(self):
         self.root = tk.Tk()
-        self.root.iconbitmap(default='D:/Workspace/map/map_dragging_validate/py/tkinter/quick.ico')
+        self.root.iconbitmap(default= os.path.join(os.getcwd(), 'quick.ico'))
+        # self.imgicon = ImageTk.PhotoImage(file=os.path.join(os.getcwd(),'quick.ico'))
+        # self.root.tk.call('wm', 'iconphoto', self.root._w, self.imgicon)
         self.root.title('Quicktron Texture Location Map Dispalyer')
         self.root.geometry('{}x{}'.format(1400,960))
 
@@ -836,8 +1305,16 @@ class Mapviewer:
         self.dropmenu.add_command(label='导入一张图像', command=self.import_single_img_callback)
         self.dropmenu.add_command(label='提交导入图像', command=self.import_single_img_commit_callback)
         self.dropmenu.add_separator()
-        self.dropmenu.add_command(label='从salite导入', command=self.import_from_sqlite_callback)
-        self.dropmenu.add_command(label='往sqlite导出', command=self.export_to_sqlite_callback)
+        self.dropmenu.add_command(label='导入标注集合', command=self.import_labeled_set_callback)
+        self.dropmenu.add_command(label='导入未标注集合', command=self.import_raw_set_callback)
+        self.dropmenu.add_command(label='固定标注集合', command=self.fix_labeled_set_callback)
+        self.dropmenu.add_command(label='标注去重', command=self.labeled_irredundancy_callback)
+        self.dropmenu.add_separator()
+        self.dropmenu.add_command(label='从Sqlite导入', command=self.import_from_sqlite_callback)
+        self.dropmenu.add_command(label='往Sqlite导出', command=self.export_to_sqlite_callback)
+        self.dropmenu.add_separator()
+        self.dropmenu.add_command(label='打开图像采集Socket', command=self.open_socket_callback)
+        self.dropmenu.add_command(label='文件夹到出为Sqlite', command=self.folder_to_sqlite_callback)
         self.menubar.add_cascade(label='选项', menu=self.dropmenu)
         # self.menubar.config(background='#f0f0f0')
 
@@ -856,6 +1333,7 @@ class Mapviewer:
         self.donothing_0_3.grid()
 
         self.mouse_pos_variable = tk.StringVar()
+        self.mouse_pos_variable.set('鼠标位置：-')
         self.mouse_pos_lbl = tk.Label(self.control_frame, textvariable=self.mouse_pos_variable)
         self.mouse_pos_lbl.grid(sticky='', pady=2)
         self.selected_node_id = tk.StringVar()
@@ -936,16 +1414,14 @@ class Mapviewer:
 
         # 保持stat flag
         self.edit_mod_var = tk.StringVar()
-        self.edit_mod_var.set('进入拖拽编辑模式')
+        self.edit_mod_var.set('进入编辑模式')
         self.edit_mod_btn = tk.Button(self.control_frame, textvariable=self.edit_mod_var, command=self.edit_mod_callback)
         self.edit_mod_btn.grid(pady=2)
 
-        self.edit_frame = tk.Frame(self.control_frame)
-        self.edit_frame.grid(pady=2)
-        self.edit_commit_btn = tk.Button(self.edit_frame, text='提交修改', command=self.edit_commit_callback)
-        self.edit_abort_btn = tk.Button(self.edit_frame, text='放弃修改', command=self.edit_abort_callback)
-        self.edit_commit_btn.grid(row=0, column=0, pady=2, padx=2)
-        self.edit_abort_btn.grid(row=0, column=1, pady=2, padx=2)
+        self.edit_rotate_val = tk.StringVar()
+        self.edit_rotate_val.set('当前无旋转图像')
+        self.edit_rotate_lal = tk.Label(self.control_frame, textvariable=self.edit_rotate_val)
+        self.edit_rotate_lal.grid(pady=2)
 
         self.edit_history_father = tk.Frame(self.control_frame)
         self.edit_history_father.grid(pady=2)
@@ -958,6 +1434,12 @@ class Mapviewer:
         self.edit_history_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.edit_history_listbox.config(yscrollcommand=self.edit_history_scrollbar.set)
 
+        self.edit_frame = tk.Frame(self.control_frame)
+        self.edit_frame.grid(pady=2)
+        self.edit_commit_btn = tk.Button(self.edit_frame, text='提交修改', command=self.edit_commit_callback)
+        self.edit_abort_btn = tk.Button(self.edit_frame, text='放弃修改', command=self.edit_abort_callback)
+        self.edit_commit_btn.grid(row=0, column=0, pady=2, padx=2)
+        self.edit_abort_btn.grid(row=0, column=1, pady=2, padx=2)
         self.donothing_4_1 = tk.Frame(self.control_frame, height=8, width=120)
         self.donothing_4_1.grid()
         self.donothing_4_2 = tk.Frame(self.control_frame, bg='#555', height=1, width=220)
@@ -972,6 +1454,7 @@ class Mapviewer:
 
         self.grid_width_val = tk.DoubleVar()
         self.coord_width_val = tk.DoubleVar()
+        self.sk_path_val = tk.StringVar()
 
         self.img_path_val = tk.StringVar()
         self.img_path_val.set('D:/')
@@ -1001,7 +1484,6 @@ class Mapviewer:
         self.root.configure(menu=self.menubar)
         self.reinit_everything()
         self.root.mainloop()
-
 
 if __name__ == '__main__':
     mv = Mapviewer()
