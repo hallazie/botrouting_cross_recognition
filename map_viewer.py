@@ -28,6 +28,7 @@ import datetime
 import copy
 import socket as sk
 import threading
+import time
 
 from PIL import Image, ImageTk
 
@@ -124,6 +125,7 @@ class Mapviewer:
         self.sk_image = None
         self.sk_image_idx = 0
         self.sk_image_panel = None
+        self.sock_loop_stop_flag = False
 
         try:
             with open('mapviewer.cfg', 'r') as f:
@@ -189,8 +191,7 @@ class Mapviewer:
                     self.grid_horz[j] = (self.grid_horz[j][0]+dx, self.grid_horz[j][1], self.grid_horz[j][2]+dx, self.grid_horz[j][3])
                 self.coord_central = (self.coord_central[0]+dx, self.coord_central[1]+dy)
         except Exception as e:
-            print 'drag err'
-            print e
+            print 'drag '+str(e)
 
     def start_rotate(self, event):
         if self.edit_mod_flag:
@@ -205,7 +206,7 @@ class Mapviewer:
                 if self.selected_node_id_int not in self.modify_img_dict.keys():
                     self.modify_img_dict[self.selected_node_id_int] = (0,0)
             except Exception as e:
-                print e
+                print 'stop_rotate '+str(e)
 
     def rotate(self, event):
         if self.edit_mod_flag:
@@ -381,7 +382,10 @@ class Mapviewer:
         # map_canvas.grid()
 
     def mouse_pos_callback(self, event):
-        self.mouse_pos_variable.set('鼠标位置：%s, %s'%(round(self.total_map_shift[0]+self.canvas.canvasx(event.x)/self.scale, 2), -1*round(self.total_map_shift[1]+self.canvas.canvasy(event.y)/self.scale, 2)))
+        try:
+            self.mouse_pos_variable.set('鼠标位置：%s, %s'%(round(self.total_map_shift[0]+self.canvas.canvasx(event.x)/self.scale, 2), -1*round(self.total_map_shift[1]+self.canvas.canvasy(event.y)/self.scale, 2)))
+        except:
+            pass
 
     def mouse_db_click_callback(self, event):
         if self.scale<=0.2:
@@ -415,7 +419,7 @@ class Mapviewer:
                 self.edit_delete_flag = False
                 self.edit_delete_btn.config(state=tk.DISABLED)
         except Exception as e:
-            print e
+            print 'mouse_db_click_callback '+str(e)
 
     def mil2pix_btn_callback(self):
         self.mil2pix_ratio = self.mil2pix.get()
@@ -544,7 +548,7 @@ class Mapviewer:
                     conn.close()
                     tkMessageBox.showinfo('提示', '删除成功')
                 except Exception as e:
-                    print e
+                    print 'edit_delete_callback '+str(e)
                     tkMessageBox.showerror('错误', '删除失败')
         else:
             tkMessageBox.showinfo('提示', '当前使用文件源，暂未实现回传功能')
@@ -618,10 +622,10 @@ class Mapviewer:
                 f.write(w)
 
     def preference_callback(self):
-        toplevel = tk.Toplevel()
-        toplevel.title('参数设置')
+        self.pref_toplevel = tk.Toplevel()
+        self.pref_toplevel.title('参数设置')
 
-        grid_width_frame = tk.Frame(toplevel)
+        grid_width_frame = tk.Frame(self.pref_toplevel)
         grid_width_frame.grid(pady=2)
         self.grid_width_val.set(self.grid_line_width)
         grid_width_lbl = tk.Button(grid_width_frame, text='网格线宽度')
@@ -629,7 +633,7 @@ class Mapviewer:
         grid_width_lbl.grid(row=0, column=0, pady=2, padx=2)
         grid_width_ent.grid(row=0, column=1, pady=2, padx=2)
 
-        coord_width_frame = tk.Frame(toplevel)
+        coord_width_frame = tk.Frame(self.pref_toplevel)
         coord_width_frame.grid(pady=2)
         self.coord_width_val.set(self.coord_line_width)
         coord_width_lbl = tk.Button(coord_width_frame, text='坐标线宽度')
@@ -637,28 +641,39 @@ class Mapviewer:
         coord_width_lbl.grid(row=0, column=0, pady=2, padx=2)
         coord_width_ent.grid(row=0, column=1, pady=2, padx=2)
 
-        sk_path_frame = tk.Frame(toplevel)
-        sk_path_frame.grid(pady=2)
-        self.sk_path_val.set(self.sk_save_path)
-        sk_path_lbl = tk.Button(sk_path_frame, text='图像采集存储目录')
-        sk_path_ent = tk.Entry(sk_path_frame, textvariable=self.sk_path_val)
-        sk_path_lbl.grid(row=0, column=0, pady=2, padx=2)
-        sk_path_ent.grid(row=0, column=1, pady=2, padx=2)
+        # sk_path_frame = tk.Frame(toplevel)
+        # sk_path_frame.grid(pady=2)
+        # self.sk_path_val.set(self.sk_save_path)
+        # sk_path_lbl = tk.Button(sk_path_frame, text='图像采集存储目录')
+        # sk_path_ent = tk.Entry(sk_path_frame, textvariable=self.sk_path_val)
+        # sk_path_lbl.grid(row=0, column=0, pady=2, padx=2)
+        # sk_path_ent.grid(row=0, column=1, pady=2, padx=2)
 
-        donothing_4_1 = tk.Frame(toplevel, height=8, width=120)
+        self.sk_path_val.set('')
+        sk_path_btn = tk.Button(self.pref_toplevel, text='图像采集存储目录', command=self.sk_path_callback)
+        sk_path_lbl = tk.Label(self.pref_toplevel, textvariable=self.sk_path_val)
+        sk_path_btn.grid(pady=2)
+        sk_path_lbl.grid(pady=2)
+
+        donothing_4_1 = tk.Frame(self.pref_toplevel, height=8, width=120)
         donothing_4_1.grid()
-        donothing_4_2 = tk.Frame(toplevel, bg='#555', height=1, width=220)
+        donothing_4_2 = tk.Frame(self.pref_toplevel, bg='#555', height=1, width=220)
         donothing_4_2.grid()
-        donothing_4_3 = tk.Frame(toplevel, height=8, width=120)
+        donothing_4_3 = tk.Frame(self.pref_toplevel, height=8, width=120)
         donothing_4_3.grid()
 
-        preference_commit_btn = tk.Button(toplevel, text='提交参数修改', command=self.preference_commit_callback)
+        preference_commit_btn = tk.Button(self.pref_toplevel, text='提交参数修改', command=self.preference_commit_callback)
         preference_commit_btn.grid(pady=0)
+
+    def sk_path_callback(self):
+        img_path = tkFileDialog.askdirectory()
+        self.sk_path_val.set(img_path)
 
     def preference_commit_callback(self):
         self.grid_line_width = self.grid_width_val.get()
         self.coord_line_width = self.coord_width_val.get()
         self.calc_visible(False)
+        self.pref_toplevel.destroy()
 
     def export_to_sqlite_callback(self):
         self.ex_sql_export = tk.Toplevel()
@@ -974,16 +989,77 @@ class Mapviewer:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ 采集功能 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+    # def open_socket_callback(self):
+    #     self.sk_top = tk.Toplevel()
+    #     self.sk_top.resizable(width=False, height=False)
+    #     self.sk_canvas = tk.Canvas(self.sk_top, width=640, height=480)
+    #     self.sk_canvas.sk_canvas_image = ImageTk.PhotoImage(Image.fromarray(np.zeros((480, 640), dtype='uint8')).resize((640, 480)))
+    #     self.sk_canvas_panel = self.sk_canvas.create_image(0, 0, image=self.sk_canvas.sk_canvas_image, anchor='nw', tags=('sk_img'))
+    #     self.sk_canvas.grid(pady=2)
+    #     self.sk_frame = tk.Frame(self.sk_top)
+    #     self.sk_frame.grid(pady=2)
 
+    #     self.sk_canvas.create_line(0, 240, 640, 240, fill='#9a9a66', width=1, dash=(5,5), tags='groundtruth')
+    #     self.sk_canvas.create_line(320, 0, 320, 480, fill='#9a9a66', width=1, dash=(5,5), tags='groundtruth')
+    #     self.sk_canvas.tag_raise('groundtruth')
+
+    #     self.sk_x_lbl = tk.Label(self.sk_frame, text='x: ')
+    #     self.sk_x_lbl.grid(row=0, column=0, padx=2)
+    #     self.sk_x_val = tk.DoubleVar()
+    #     self.sk_x_val.set(0.)
+    #     self.sk_x_ent = tk.Entry(self.sk_frame, textvariable = self.sk_x_val)
+    #     self.sk_x_ent.grid(row=0, column=1, padx=2)
+
+    #     self.sk_y_lbl = tk.Label(self.sk_frame, text='y: ')
+    #     self.sk_y_lbl.grid(row=0, column=2, padx=2)
+    #     self.sk_y_val = tk.DoubleVar()
+    #     self.sk_y_val.set(0.)
+    #     self.sk_y_ent = tk.Entry(self.sk_frame, textvariable = self.sk_y_val)
+    #     self.sk_y_ent.grid(row=0, column=3, padx=2)
+
+    #     self.sk_t_lbl = tk.Label(self.sk_frame, text='θ: ')
+    #     self.sk_t_lbl.grid(row=0, column=4, padx=2)
+    #     self.sk_t_val = tk.DoubleVar()
+    #     self.sk_t_val.set(0.)
+    #     self.sk_t_ent = tk.Entry(self.sk_frame, textvariable = self.sk_t_val)
+    #     self.sk_t_ent.grid(row=0, column=5, padx=2)
+
+    #     self.sk_commit_btn = tk.Button(self.sk_frame, text='导入图像', command=self.sk_commit_btn_callback)
+    #     self.sk_commit_btn.grid(row=0, column=6, padx=2)
+
+    #     # self.socket_loop_stop = threading.Event()
+    #     self.socket_loop_thread = threading.Thread(target=self.socket_loop)
+    #     self.socket_loop_thread.start()
+
+    #     self.sk_top.protocol('WM_DELETE_WINDOW', self.on_sk_closing)
 
     def open_socket_callback(self):
         self.sk_top = tk.Toplevel()
+        self.sk_left = tk.Frame(self.sk_top)
+        self.sk_right = tk.Frame(self.sk_top)
+        self.sk_left.grid(row=0, column=0, padx=2, pady=2)
+        self.sk_right.grid(row=0, column=1, padx=2, pady=2)
         self.sk_top.resizable(width=False, height=False)
-        self.sk_canvas = tk.Canvas(self.sk_top, width=640, height=480)
+
+        self.sk_listbox_val = tk.StringVar()
+        self.sk_listbox_val.set('当前已采集 %s 张图像'%self.sk_image_idx)
+        self.sk_listbox_lbl = tk.Label(self.sk_left, textvariable=self.sk_listbox_val)
+        self.sk_listbox_lbl.grid(pady=2)
+
+        self.sk_listbox_frame = tk.Frame(self.sk_left)
+        self.sk_listbox_frame.grid(pady=2)
+        self.sk_listbox = tk.Listbox(self.sk_listbox_frame)
+        self.sk_listbox.pack(side='left', fill='y')
+        self.sk_left_scrollbar = tk.Scrollbar(self.sk_listbox_frame, orient=tk.VERTICAL)
+        self.sk_left_scrollbar.config(command=self.sk_listbox.yview)
+        self.sk_left_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.sk_listbox.config(yscrollcommand=self.edit_history_scrollbar.set)
+
+        self.sk_canvas = tk.Canvas(self.sk_right, width=640, height=480)
         self.sk_canvas.sk_canvas_image = ImageTk.PhotoImage(Image.fromarray(np.zeros((480, 640), dtype='uint8')).resize((640, 480)))
         self.sk_canvas_panel = self.sk_canvas.create_image(0, 0, image=self.sk_canvas.sk_canvas_image, anchor='nw', tags=('sk_img'))
         self.sk_canvas.grid(pady=2)
-        self.sk_frame = tk.Frame(self.sk_top)
+        self.sk_frame = tk.Frame(self.sk_right)
         self.sk_frame.grid(pady=2)
 
         self.sk_canvas.create_line(0, 240, 640, 240, fill='#9a9a66', width=1, dash=(5,5), tags='groundtruth')
@@ -1014,18 +1090,30 @@ class Mapviewer:
         self.sk_commit_btn = tk.Button(self.sk_frame, text='导入图像', command=self.sk_commit_btn_callback)
         self.sk_commit_btn.grid(row=0, column=6, padx=2)
 
-        socket_loop_thread = threading.Thread(target=self.socket_loop)
-        socket_loop_thread.start()
+        # self.socket_loop_stop = threading.Event()
+        self.socket_loop_thread = threading.Thread(target=self.socket_loop)
+        self.socket_loop_thread.daemon = True
+        self.socket_loop_thread.start()
 
-        self.sk_top.protocol("WM_DELETE_WINDOW", on_sk_closing)
+        self.sk_top.protocol('WM_DELETE_WINDOW', self.on_sk_closing)
 
     def on_sk_closing(self):
-        
+        try:
+            self.sock.close()
+        except:
+            pass
+        time.sleep(0.1)
+        self.sock_loop_stop_flag = True
+        # self.socket_loop_thread.join()
+        self.sk_top.destroy()
+
 
     def socket_loop(self):
-        self.sock = sk.socket(sk.AF_INET, sk.SOCK_DGRAM)
-        self.sock.bind(('192.168.1.11', 20014))
-        # self.sock.bind(('127.0.0.1', 20014))
+        try:
+            self.sock = sk.socket(sk.AF_INET, sk.SOCK_DGRAM)
+            self.sock.bind(('192.168.1.11', 20014))
+        except Exception as e:
+            print e
 
         self.sk_frame_id = 0
         self.sk_frame_id_curr = 0
@@ -1033,40 +1121,58 @@ class Mapviewer:
         self.sk_line_idx_prev = 0
         self.n_add = 0
 
-        try:
-            self.bmp = ''
-            cnt = 0
-            while True:
-                try:
-                    data, _ = self.sock.recvfrom(672)
-                    if len(data) != 672:
-                        continue
-                    self.sk_frame_id = ord(data[6]) * 256 + ord(data[7])
-                    self.sk_line_idx = ord(data[8]) * 256 + ord(data[9])
-                    self.bmp += data[32:]
-                    if self.sk_line_idx == 479:
-                        self.sk_frame_id_curr = self.sk_frame_id
-                        arr = np.fromstring(self.bmp, dtype='uint8').reshape((480,640))
-                        self.sk_image = Image.fromarray(arr)
-                        self.sk_canvas.sk_canvas_image = ImageTk.PhotoImage(self.sk_image)
-                        self.sk_canvas.itemconfig(self.sk_canvas_panel, image=self.sk_canvas.sk_canvas_image)
-                        # self.sk_image = ImageTk.PhotoImage()
-                        self.sk_canvas.tag_raise('groundtruth')
-                        self.bmp = ''
-                except Exception as e:
+        self.bmp = ''
+        cnt = 0
+        while True:
+            try:
+                data, _ = self.sock.recvfrom(672)
+                if len(data) != 672:
+                    continue
+                self.sk_frame_id = ord(data[6]) * 256 + ord(data[7])
+                self.sk_line_idx = ord(data[8]) * 256 + ord(data[9])
+                if self.sk_line_idx == 0:
                     self.bmp = ''
-                    print e
-        except Exception as e:
-            traceback.print_exc()
-
+                self.bmp += data[32:]
+                if self.sk_line_idx==479 and len(self.bmp)==480*640:
+                    self.sk_frame_id_curr = self.sk_frame_id
+                    arr = np.fromstring(self.bmp, dtype='uint8').reshape((480,640))
+                    self.sk_image = Image.fromarray(arr)
+                    self.sk_canvas.sk_canvas_image = ImageTk.PhotoImage(self.sk_image)
+                    try:
+                        self.sk_canvas.itemconfig(self.sk_canvas_panel, image=self.sk_canvas.sk_canvas_image)
+                        self.sk_canvas.tag_raise('groundtruth')
+                    except:
+                        pass
+                    self.bmp = ''
+            except Exception as e:
+                self.bmp = ''
+                print 'sock_loop inner '+str(e)
+                traceback.print_exc()
+                if self.sock_loop_stop_flag == True:
+                    break
+                else:
+                    continue
 
     def sk_commit_btn_callback(self):
         if self.sk_image == None:
             tkMessageBox.showwarning('错误', '暂无图像')
-        else:
-            filename = '%s,%s,%s,%s.bmp'%(self.sk_image_idx, self.sk_x_val.get(), self.sk_y_val.get(), self.sk_t_val.get())
-            self.sk_image.save(os.join(self.sk_save_path, filename))
+            return
+        try:
+            curx = float(self.sk_x_val.get())
+            cury = float(self.sk_y_val.get())
+            curt = float(self.sk_t_val.get())
+            filename = '%s_%s_%s_%s.bmp'%(self.sk_image_idx, curx, cury, curt)
+            self.sk_image.save(os.path.join(self.sk_path_val.get(), filename))
             self.sk_image_idx += 1
+            for _,_, fs in os.walk(self.sk_path_val.get()):
+                self.sk_image_idx = len(fs)
+                self.sk_listbox_val.set('当前已采集 %s 张图像'%len(fs))
+                self.sk_listbox.delete(0,tk.END)
+                for f in fs:
+                    tid, tx, ty, tt = f[:-4].split('_')
+                    self.sk_listbox.insert(tk.END, 'id:%s  x:%s  y:%s  theta:%s'%(tid, tx, ty, tt))
+        except Exception as e:
+            print 'sk_commit_btn_callback '+str(e)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ 功能函数 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -1483,7 +1589,10 @@ class Mapviewer:
         self.root.resizable(width=False, height=False)
         self.root.configure(menu=self.menubar)
         self.reinit_everything()
-        self.root.mainloop()
+
+        main_loop_thread = threading.Thread(target=self.root.mainloop)
+        main_loop_thread.run()
+        # self.root.mainloop()
 
 if __name__ == '__main__':
     mv = Mapviewer()
