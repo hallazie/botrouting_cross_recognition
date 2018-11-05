@@ -17,11 +17,9 @@
 try:
     print 'using Tkinter'
     import Tkinter as tk
-    import ttk
 except:
     print 'using tkinter'
     import tkinter as tk
-    import ttk
 
 import tkFileDialog
 import tkMessageBox
@@ -558,10 +556,6 @@ class Mapviewer:
             return
         self.edit_mod_flag = False
         # TODO:redo all the modification
-        # for k in self.dragging_img_set:
-        #     self.img_dict[k].x = (self.img_dict[k].ox+self.total_map_shift[0])/self.scale
-        #     self.img_dict[k].y = (self.img_dict[k].oy+self.total_map_shift[1])/self.scale
-        # self.calc_visible(False)
         for item in self.edit_history_listbox.get(0, tk.END):
             idx, dx, dy, dtheta = [e.split(':')[1] for e in item.split('  ')]
             idx, dx, dy, dtheta = int(idx), float(dx), -1*float(dy), float(dtheta)
@@ -569,7 +563,6 @@ class Mapviewer:
             self.img_dict[idx].y -= dy*self.scale
             self.img_dict[idx].rot -= dtheta
         self.calc_visible(False)
-        # self.reinit_everything()
         self.edit_history_listbox.delete(0,tk.END)
         self.dragging_img_set = set()
         self.modify_img_dict = {}
@@ -679,15 +672,7 @@ class Mapviewer:
         coord_width_lbl.grid(row=0, column=0, pady=2, padx=2)
         coord_width_ent.grid(row=0, column=1, pady=2, padx=2)
 
-        # sk_path_frame = tk.Frame(toplevel)
-        # sk_path_frame.grid(pady=2)
-        # self.sk_path_val.set(self.sk_save_path)
-        # sk_path_lbl = tk.Button(sk_path_frame, text='图像采集存储目录')
-        # sk_path_ent = tk.Entry(sk_path_frame, textvariable=self.sk_path_val)
-        # sk_path_lbl.grid(row=0, column=0, pady=2, padx=2)
-        # sk_path_ent.grid(row=0, column=1, pady=2, padx=2)
-
-        self.sk_path_val.set('')
+        self.sk_path_val.set('D:/')
         sk_path_btn = tk.Button(self.pref_toplevel, text='图像采集存储目录', command=self.sk_path_callback)
         sk_path_lbl = tk.Label(self.pref_toplevel, textvariable=self.sk_path_val)
         sk_path_btn.grid(pady=2)
@@ -701,7 +686,7 @@ class Mapviewer:
         donothing_4_3.grid()
 
         preference_commit_btn = tk.Button(self.pref_toplevel, text='提交参数修改', command=self.preference_commit_callback)
-        preference_commit_btn.grid(pady=0)
+        preference_commit_btn.grid(pady=5)
 
     def sk_path_callback(self):
         img_path = tkFileDialog.askdirectory()
@@ -946,7 +931,7 @@ class Mapviewer:
         for f in fs:
             try:
                 # img = Image.open(img_path+'/'+f).resize((self.imgsize,self.imgsize))
-                img = Image.open(img_path+'/'+f)
+                img = Image.open(img_path+'/'+f).resize((320,320))
                 idx, curx, cury, theta = int(f.split('_')[0]), float(f.split('_')[1]), float(f.split('_')[2]), float(f.split('_')[3].split('.')[0])
                 if idx in self.img_dict.keys():
                     continue
@@ -991,7 +976,7 @@ class Mapviewer:
         for f in fs:
             try:
                 # img = Image.open(img_path+'/'+f).resize((self.imgsize,self.imgsize))
-                img = Image.open(img_path+'/'+f)
+                img = Image.open(img_path+'/'+f).resize((320,320))
                 idx, curx, cury, theta = int(f.split('_')[0]), float(f.split('_')[1]), float(f.split('_')[2]), float(f.split('_')[3].split('.')[0])
                 if idx in self.img_dict.keys():
                     continue
@@ -1072,6 +1057,10 @@ class Mapviewer:
     #     self.sk_top.protocol('WM_DELETE_WINDOW', self.on_sk_closing)
 
     def open_socket_callback(self):
+        if self.sk_top_alive == True:
+            tkMessageBox.showwarning('错误', '已有打开的采集窗口')
+            return
+
         self.sk_top = tk.Toplevel()
         self.sk_left = tk.Frame(self.sk_top)
         self.sk_right = tk.Frame(self.sk_top)
@@ -1227,10 +1216,47 @@ class Mapviewer:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ 功能函数 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+    # def reinit_everything(self, load_source='db'):
+    #     self.dragged_item = tk.ALL
+    #     self.imgsize = 320
+    #     self.current_coords = 0, 0
+    #     self.total_map_shift = (0, 0)
+    #     self.width = 1280
+    #     self.height = 960
+    #     self.scale = 1.0
+    #     self.img_dict = {}
+    #     self.grid_horz = []
+    #     self.grid_vert = []
+    #     self.last_canvx, self.last_canvy = 0, 0
+    #     self.window = [(0, 1280), (0, 960)]
+    #     self.factor = 1.1
+    #     self.maxx, self.maxy = 0, 0
+    #     self.mutex = False
+    #     self.mutex_unlock_count = 0
+    #     self.edit_mod_flag = False
+    #     self.edit_history = []
+    #     self.x_axis_gap_val = 1000
+    #     self.y_axis_gap_val = 1000
+    #     self.dragging_img_set = set()
+    #     self.modify_img_dict = {}
+    #     self.edit_history_listbox.delete(0, tk.END)
+
+    #     self.zoom_scale.set('缩放系数：1.0')
+
+    #     self.imgsize = int(320*self.mil2pix_ratio)
+    #     if load_source=='db':
+    #         self.img_load_db()
+    #     else:
+    #         self.img_load_folder()
+    #     self.init_binding()
+    #     self.calc_visible(False)
+    #     self.grid_load()
+
     def reinit_everything(self, load_source='db'):
         self.dragged_item = tk.ALL
         self.imgsize = 320
         self.current_coords = 0, 0
+        self.current_angle = 0.
         self.total_map_shift = (0, 0)
         self.width = 1280
         self.height = 960
@@ -1248,13 +1274,28 @@ class Mapviewer:
         self.edit_history = []
         self.x_axis_gap_val = 1000
         self.y_axis_gap_val = 1000
+        self.show_grid_flag = True
+        self.edit_delete_flag = False
         self.dragging_img_set = set()
         self.modify_img_dict = {}
         self.edit_history_listbox.delete(0, tk.END)
-
         self.zoom_scale.set('缩放系数：1.0')
-
         self.imgsize = int(320*self.mil2pix_ratio)
+
+        # new add
+        self.selected_node_id_int = None
+        self.selected_node_canvas_id_int = None
+        self.img_insert = None
+        self.enter_label_mod = False
+        self.using_db = True
+        self.curr_img_rotate = 0.0
+        
+        self.sk_top_alive = False
+        self.sk_control_focus = False
+        self.sk_image = None
+        self.sk_image_idx = 0
+        self.sk_image_panel = None
+
         if load_source=='db':
             self.img_load_db()
         else:
@@ -1271,7 +1312,7 @@ class Mapviewer:
             img_cnt = 0
             for c, f in enumerate(fs):
                 # img = Image.open(self.img_path_val.get()+'/'+f).resize((self.imgsize,self.imgsize))
-                img = Image.open(self.img_path_val.get()+'/'+f)
+                img = Image.open(self.img_path_val.get()+'/'+f).resize((320,320))
                 idx, curx, cury, theta = int(f.split('_')[0]), float(f.split('_')[1]), float(f.split('_')[2]), float(f.split('_')[3].split('.')[0])
                 imgobj = Imgobj(idx=idx,
                                 image=img,
@@ -1403,11 +1444,6 @@ class Mapviewer:
                 self.canvas.create_image(self.img_dict[k].x-shift, self.img_dict[k].y-shift, image=self.tk_dict[k], anchor='nw', tags=('img', k, 'selected'))
             else:
                 self.canvas.create_image(self.img_dict[k].x-shift, self.img_dict[k].y-shift, image=self.tk_dict[k], anchor='nw', tags=('img', k))
-            # else:
-            #     if k == self.selected_node_id_int:
-            #         self.canvas.create_image(self.img_dict[k].x, self.img_dict[k].y, image=self.tk_dict[k], anchor='nw', tags=('img', k, 'selected'))
-            #     else:
-            #         self.canvas.create_image(self.img_dict[k].x, self.img_dict[k].y, image=self.tk_dict[k], anchor='nw', tags=('img', k))
         if self.show_grid_flag:
             for e in self.grid_vert: 
                 self.canvas.create_line(e[0], e[1], e[2], e[3], fill='purple', width=self.grid_line_width, tags='coordline')
