@@ -2,18 +2,6 @@
 # @author: xiaoshanghua
 # map viewer
 
-# TODO 10-25
-# 1.选中单张图像后添加边框  V
-# 2.选择是否显示网格线      V
-# 3.支持自定义网格线宽度    V
-# 4.验证透明度对提高显示效果的可用性
-# 5.添加修改/添加/删除单张图并回传数据库 V
-# 6.添加修改历史undo       V
-# 7.改变坐标中心为中心的0,0 V
-# 8.点击查看全地图示例图    V
-# 9.添加旋转               V
-# 10.添加socket监听接收图像并显示+存储
-
 try:
     print 'using Tkinter'
     import Tkinter as tk
@@ -23,6 +11,8 @@ except:
 
 import tkFileDialog
 import tkMessageBox
+import ttk
+
 import numpy as np
 import math
 import random
@@ -39,6 +29,12 @@ import time
 from PIL import Image, ImageTk
 
 class Imgobj:
+    '''
+        Imgobj中始终存储原始图像（320*320）
+        不同绘图模式中，使用绘图时变换或存储临时图像：
+            旋转：临时绘制
+            边框：以flag判断是否有边框，有则使用边框备份。
+    '''
     def __init__(self, idx, image, x, y, theta):
         self.idx = idx
         self.image = image
@@ -48,14 +44,16 @@ class Imgobj:
         self.oy = y
         self.theta = theta
         self.rot = 0.
-        self.show = True
-        self.image_back = None
+        self.image_boxed = None
+
+        self.shown = True
         self.labeled = False
         self.fixed = False
+        self.boxed = False
     
     def enter_boundingbox(self, idx):
-        if self.image_back==None:
-            self.image_back = self.image
+        if self.image_boxed == None:
+            self.boxed = True
             tmp = np.array(self.image.convert('RGB'))
             w, h = self.image.size
             for i in range(3):
@@ -69,70 +67,76 @@ class Imgobj:
                     tmp[:w,   h-5:,  i] = 0
                     tmp[0:5,  :h,    i] = 0
                     tmp[w-5:, :h,    i] = 0
-            self.image = Image.fromarray(tmp.astype('uint8'))
+            self.image_boxed = Image.fromarray(tmp.astype('uint8'))
 
     def leave_boundingbox(self):
-        if self.image_back != None:
-            self.image = self.image_back
-            self.image_back = None
-
-class Lineobj:
-    def __init__(self, direct, show):
-        self.direct = direct
-        self.show = show
-
-    def show_flag(self):
-        self.show = not self.show
+        if self.image_boxed != None:
+            self.image_boxed = None
+            self.boxed = False
 
 class Mapviewer:
     def __init__(self):
-        self.dragged_item = tk.ALL
+        # basick vars
         self.imgsize = 320
         self.mil2pix_ratio = 0.40625
-        self.current_coords = 0, 0
-        self.current_angle = 0.
-        self.total_map_shift = (0, 0)
+        self.scale = 1.0
         self.width = 1280
         self.height = 960
-        self.scale = 1.0
-        self.img_dict = {}
-        self.grid_horz = []
-        self.grid_vert = []
-        self.canvas = None
         self.window = [(0, 1280), (0, 960)]
         self.factor = 1.1
         self.maxx, self.maxy = 0, 0
-        self.mutex = False
-        self.mutex_unlock_count = 0
-        self.edit_mod_flag = False
-        self.edit_history = []
+        self.db_path = ''
+        self.configfile = {}
+        self.using_db = True
+
+        # tk vars
+        self.canvas = None
+
+        # canvas vars
+        self.dragged_item = tk.ALL
+        self.current_coords = 0, 0
+        self.current_angle = 0.
+        self.total_map_shift = (640, 480)           # 屏幕左上角所显示的位置，平移/缩放均会影响
         self.x_axis_gap_val = 1000
         self.y_axis_gap_val = 1000
-        self.show_grid_flag = True
-        self.edit_delete_flag = False
         self.coord_central = 160*self.mil2pix_ratio, 160*self.mil2pix_ratio
-        # self.db_path = 'D:/Workspace/map/MapData/suzhou.db'
-        self.db_path = ''
-        self.dragging_img_set = set()
-        self.modify_img_dict = {}
-        self.configfile = {}
         self.selected_node_id_int = None
         self.selected_node_canvas_id_int = None
         self.img_insert = None
-        self.enter_label_mod = False
-        self.using_db = True
         self.curr_img_rotate = 0.0
-        # preference
-        self.grid_line_width = 1
-        self.coord_line_width = 1
-        self.sqlite_table_name = 'zhdl_map'
-        self.sk_save_path = ''
 
+        # item vars
+        self.img_dict = {}
+        self.modify_img_dict = {}
+        self.grid_horz = []
+        self.grid_vert = []
+        self.edit_history = []
+        self.dragging_img_set = set()
+
+        # util vars
+        self.edit_mod_flag = False
+        self.mutex = False
+        self.mutex_unlock_count = 0
+        self.show_grid_flag = True
+        self.edit_delete_flag = False
+        self.enter_label_mod = False
+
+        # socket vars 
         self.sk_top_alive = False
         self.sk_control_focus = False
         self.sk_image = None
         self.sk_image_idx = 0
         self.sk_image_panel = None
+        self.sock_open_flag = False
+
+        # global view vars
+        # None
+        
+        # preference vars
+        self.grid_line_width = 1
+        self.coord_line_width = 1
+        self.sqlite_table_name = 'zhdl_map'
+        self.sk_save_path = ''
 
         try:
             with open('mapviewer.cfg', 'r') as f:
@@ -143,6 +147,8 @@ class Mapviewer:
                 self.db_path = self.configfile['DBPATH']
         except:
             print 'no config file exist'
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++ 画布鼠标方法 +++++++++++++++++++++++++++++++++++++++++++++++++++
 
     def start_drag(self, event):
         # result = self.canvas.find_withtag('current')
@@ -158,7 +164,6 @@ class Mapviewer:
         self.drag_end = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
         try:
             if self.dragged_item==tk.ALL or self.edit_mod_flag==False:
-                # self.window = [(self.total_map_shift[0]/self.scale, (self.total_map_shift[0]+1280)/self.scale), (self.total_map_shift[1]/self.scale, (self.total_map_shift[1]+960)/self.scale)]
                 self.calc_visible(False)
         except Exception as e:
             print 'stop_drag err'
@@ -183,12 +188,11 @@ class Mapviewer:
                 self.img_dict[self.dragged_item].x += dx
                 self.img_dict[self.dragged_item].y += dy
                 self.modify_img_dict[self.dragged_item] = (self.modify_img_dict[self.dragged_item][0]+dx/self.scale, self.modify_img_dict[self.dragged_item][1]+dy/self.scale)
-                # self.calc_visible(False)
             else:
-                # self.canvas.delete('baseline')
+                self.canvas.delete('baseline')
                 self.canvas.move(tk.ALL, dx, dy)
-                # self.canvas.create_line(640,0,640,960, fill='blue', tags='baseline')
-                # self.canvas.create_line(0,480,1280,480, fill='blue', tags='baseline')
+                self.canvas.create_line(640,0,640,960, fill='blue', tags='baseline')
+                self.canvas.create_line(0,480,1280,480, fill='blue', tags='baseline')
                 for k in self.img_dict.keys():
                     self.img_dict[k].x += dx
                     self.img_dict[k].y += dy
@@ -230,7 +234,7 @@ class Mapviewer:
                     self.rotaet_tkimg = ImageTk.PhotoImage(self.rotate_img)
                     shift = (self.rotate_img.size[0]-self.imgsize*self.scale)/2.
                     self.canvas.create_image((self.img_dict[self.selected_node_id_int].x-shift, self.img_dict[self.selected_node_id_int].y-shift), image=self.rotaet_tkimg, anchor='nw', tags=('img', self.selected_node_id_int, 'selected'))
-                    self.edit_rotate_val.set('图像：%s，旋转角度：%s°'%(self.selected_node_id_int, self.img_dict[self.selected_node_id_int].rot+self.current_rotate*0.1))
+                    self.edit_rotate_val.set('图像：%s，旋转角度：%s°'%(self.selected_node_id_int, round(self.img_dict[self.selected_node_id_int].rot+self.current_rotate*0.1, 2)))
             except Exception as e:
                 traceback.print_exc()
                 print self.canvas.gettags('current')
@@ -238,21 +242,26 @@ class Mapviewer:
     def zoomer(self, event):
         if not self.mutex:
             self.mutex = True
-            self.mouse_pos_variable.set('鼠标位置：%s, %s'%(round(self.total_map_shift[0]+self.canvas.canvasx(event.x)/self.scale, 2), -1*round(self.total_map_shift[1]+self.canvas.canvasy(event.y)/self.scale, 2)))
             if event.delta > 0:
                 if self.scale < 2**3:
                     self.scale *= self.factor
                     self.zoom_scale.set('缩放系数：%s'%round(self.scale, 5))
                     for k in self.img_dict.keys():
-                        self.img_dict[k].x *= self.factor
-                        self.img_dict[k].y *= self.factor
+                        self.img_dict[k].x = (self.img_dict[k].x - 640) * self.factor + 640
+                        self.img_dict[k].y = (self.img_dict[k].y - 480) * self.factor + 480
                     for i in range(len(self.grid_vert)):
-                        self.grid_vert[i] = (self.grid_vert[i][0]*self.factor, self.grid_vert[i][1]*self.factor, self.grid_vert[i][2]*self.factor, self.grid_vert[i][3]*self.factor)
+                        self.grid_vert[i] = (
+                            (self.grid_vert[i][0] - 640) * self.factor + 640,
+                            (self.grid_vert[i][1] - 480) * self.factor + 480,
+                            (self.grid_vert[i][2] - 640) * self.factor + 640,
+                            (self.grid_vert[i][3] - 480) * self.factor + 480)
                     for j in range(len(self.grid_horz)):
-                        self.grid_horz[j] = (self.grid_horz[j][0]*self.factor, self.grid_horz[j][1]*self.factor, self.grid_horz[j][2]*self.factor, self.grid_horz[j][3]*self.factor)
-                    self.coord_central = (self.coord_central[0]*self.factor, self.coord_central[1]*self.factor)
-                    # self.window = [((self.window[0][0])/self.factor, (self.window[0][1])/self.factor), ((self.window[1][0])/self.factor, (self.window[1][1])/self.factor)]
-                    self.redraw()
+                        self.grid_horz[j] = (
+                            (self.grid_horz[j][0] - 640) * self.factor + 640,
+                            (self.grid_horz[j][1] - 480) * self.factor + 480,
+                            (self.grid_horz[j][2] - 640) * self.factor + 640,
+                            (self.grid_horz[j][3] - 480) * self.factor + 480)
+                    self.calc_visible(True)
                 else:
                     print 'achieved top'
             elif event.delta <0:
@@ -264,17 +273,26 @@ class Mapviewer:
                     self.scale /= self.factor
                     self.zoom_scale.set('缩放系数：%s'%round(self.scale, 5))
                     for k in self.img_dict.keys():
-                        self.img_dict[k].x /= self.factor
-                        self.img_dict[k].y /= self.factor
+                        self.img_dict[k].x = (self.img_dict[k].x - 640) / self.factor + 640
+                        self.img_dict[k].y = (self.img_dict[k].y - 480) / self.factor + 480
                     for i in range(len(self.grid_vert)):
-                        self.grid_vert[i] = (self.grid_vert[i][0]/self.factor, self.grid_vert[i][1]/self.factor, self.grid_vert[i][2]/self.factor, self.grid_vert[i][3]/self.factor)
+                        self.grid_vert[i] = (
+                            (self.grid_vert[i][0] - 640) / self.factor + 640,
+                            (self.grid_vert[i][1] - 480) / self.factor + 480,
+                            (self.grid_vert[i][2] - 640) / self.factor + 640,
+                            (self.grid_vert[i][3] - 480) / self.factor + 480)
                     for j in range(len(self.grid_horz)):
-                        self.grid_horz[j] = (self.grid_horz[j][0]/self.factor, self.grid_horz[j][1]/self.factor, self.grid_horz[j][2]/self.factor, self.grid_horz[j][3]/self.factor)
-                    self.coord_central = (self.coord_central[0]/self.factor, self.coord_central[1]/self.factor)
-                    # self.window = [((self.window[0][0])*self.factor, (self.window[0][1])*self.factor), ((self.window[1][0])*self.factor, (self.window[1][1])*self.factor)]
-                    self.redraw()
+                        self.grid_horz[j] = (
+                            (self.grid_horz[j][0] - 640) / self.factor + 640,
+                            (self.grid_horz[j][1] - 480) / self.factor + 480,
+                            (self.grid_horz[j][2] - 640) / self.factor + 640,
+                            (self.grid_horz[j][3] - 480) / self.factor + 480)
+                    self.calc_visible(True)
                 else:
                     print 'achieved bottom'
+            # 因为zoomer bind的是all，所以event.x与y需要减去相应的左和上的距离。
+            shift_x, shift_y = ((event.x - 220) - 640) / self.scale, ((event.y - 2) - 480) / self.scale
+            self.mouse_pos_variable.set('鼠标位置：%s, %s'%(round(self.total_map_shift[0]+shift_x, 2), -1*round(self.total_map_shift[1]+shift_y, 2)))
             if self.scale <= 0.2:
                 self.edit_delete_var.set('删除选中图像：暂无选中ID')
                 self.edit_delete_flag = False
@@ -289,15 +307,21 @@ class Mapviewer:
                 self.scale *= self.factor
                 self.zoom_scale.set('缩放系数：%s'%round(self.scale, 5))
                 for k in self.img_dict.keys():
-                    self.img_dict[k].x *= self.factor
-                    self.img_dict[k].y *= self.factor
+                    self.img_dict[k].x = (self.img_dict[k].x - 640) * self.factor + 640
+                    self.img_dict[k].y = (self.img_dict[k].y - 480) * self.factor + 480
                 for i in range(len(self.grid_vert)):
-                    self.grid_vert[i] = (self.grid_vert[i][0]*self.factor, self.grid_vert[i][1]*self.factor, self.grid_vert[i][2]*self.factor, self.grid_vert[i][3]*self.factor)
+                    self.grid_vert[i] = (
+                        (self.grid_vert[i][0] - 640) * self.factor + 640,
+                        (self.grid_vert[i][1] - 480) * self.factor + 480,
+                        (self.grid_vert[i][2] - 640) * self.factor + 640,
+                        (self.grid_vert[i][3] - 480) * self.factor + 480)
                 for j in range(len(self.grid_horz)):
-                    self.grid_horz[j] = (self.grid_horz[j][0]*self.factor, self.grid_horz[j][1]*self.factor, self.grid_horz[j][2]*self.factor, self.grid_horz[j][3]*self.factor)
-                self.coord_central = (self.coord_central[0]*self.factor, self.coord_central[1]*self.factor)
-                # self.window = [((self.window[0][0])/self.factor, (self.window[0][1])/self.factor), ((self.window[1][0])/self.factor, (self.window[1][1])/self.factor)]
-                self.redraw()
+                    self.grid_horz[j] = (
+                        (self.grid_horz[j][0] - 640) * self.factor + 640,
+                        (self.grid_horz[j][1] - 480) * self.factor + 480,
+                        (self.grid_horz[j][2] - 640) * self.factor + 640,
+                        (self.grid_horz[j][3] - 480) * self.factor + 480)
+                self.calc_visible(True)
             else:
                 print 'achieved top'
 
@@ -320,15 +344,21 @@ class Mapviewer:
                 self.scale /= self.factor
                 self.zoom_scale.set('缩放系数：%s'%round(self.scale, 5))
                 for k in self.img_dict.keys():
-                    self.img_dict[k].x /= self.factor
-                    self.img_dict[k].y /= self.factor
+                    self.img_dict[k].x = (self.img_dict[k].x - 640) / self.factor + 640
+                    self.img_dict[k].y = (self.img_dict[k].y - 480) / self.factor + 480
                 for i in range(len(self.grid_vert)):
-                    self.grid_vert[i] = (self.grid_vert[i][0]/self.factor, self.grid_vert[i][1]/self.factor, self.grid_vert[i][2]/self.factor, self.grid_vert[i][3]/self.factor)
+                    self.grid_vert[i] = (
+                        (self.grid_vert[i][0] - 640) / self.factor + 640,
+                        (self.grid_vert[i][1] - 480) / self.factor + 480,
+                        (self.grid_vert[i][2] - 640) / self.factor + 640,
+                        (self.grid_vert[i][3] - 480) / self.factor + 480)
                 for j in range(len(self.grid_horz)):
-                    self.grid_horz[j] = (self.grid_horz[j][0]/self.factor, self.grid_horz[j][1]/self.factor, self.grid_horz[j][2]/self.factor, self.grid_horz[j][3]/self.factor)
-                self.coord_central = (self.coord_central[0]/self.factor, self.coord_central[1]/self.factor)
-                # self.window = [((self.window[0][0])*self.factor, (self.window[0][1])*self.factor), ((self.window[1][0])*self.factor, (self.window[1][1])*self.factor)]
-                self.redraw()
+                    self.grid_horz[j] = (
+                        (self.grid_horz[j][0] - 640) / self.factor + 640,
+                        (self.grid_horz[j][1] - 480) / self.factor + 480,
+                        (self.grid_horz[j][2] - 640) / self.factor + 640,
+                        (self.grid_horz[j][3] - 480) / self.factor + 480)
+                self.calc_visible(True)
             else:
                 print 'achieved bottom'
             if self.scale <= 0.2:
@@ -336,10 +366,6 @@ class Mapviewer:
                 self.edit_delete_flag = False
                 self.edit_delete_btn.config(state=tk.DISABLED)
             self.mutex = False
-
-    def redraw(self):
-        # TODO: num_tks
-        self.calc_visible(True)
 
     def edit_single_click_callback(self, event):
         idx = self.edit_history_listbox.curselection()
@@ -351,42 +377,7 @@ class Mapviewer:
             self.img_dict[pid].enter_boundingbox(1)
             self.calc_visible(False)
 
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ 回调函数 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-    # def show_global_map_callback(self):
-    #     # toplevel = tk.Toplevel()
-    #     # global_canvas = tk.Canvas(toplevel, width=1280, height=960)
-    #     width = 2048
-    #     height = float(width)*(self.maxy/float(self.maxx))
-    #     global_img = np.zeros((int(width*self.mil2pix_ratio),int(height*self.mil2pix_ratio)))
-    #     scale = float(width)*self.mil2pix_ratio/(self.maxx+1000)
-    #     err_cnt = 0
-    #     for k in self.img_dict.keys():
-    #         try:
-    #             imgobj = self.img_dict[k]
-    #             x, y = int(scale*imgobj.ox), int(scale*imgobj.oy)
-    #             w, h = int(imgobj.image.size[0]*scale*self.mil2pix_ratio), int(imgobj.image.size[1]*scale*self.mil2pix_ratio)
-    #             # imgarr = np.array(imgobj.image.resize((int(w), int(h))))
-    #             imgarr = np.array(imgobj.image.resize((w, h)))
-    #             global_img[x:x+w, y:y+h] = imgarr
-    #         except:
-    #             err_cnt += 1
-    #     print 'total err when constructing global img: %s'%err_cnt
-    #     global_arr = global_img.transpose().astype('uint8')
-    #     # for i in range(int(global_arr.shape[0]//2)):
-    #     #     swap = copy.deepcopy(global_arr[i,:])
-    #     #     global_arr[i,:] = copy.deepcopy(global_arr[int(global_arr.shape[0]-i-1),:])
-    #     #     global_arr[int(global_arr.shape[0]-i-1),:] = copy.deepcopy(swap)
-    #     global_img = Image.fromarray(global_arr).resize((width, int(height)))
-    #     global_img.save('map.bmp')
-    #     global_img.show()
-    #     # toplevel = tk.Toplevel(width=1024, height=int(height//2))
-    #     # toplevel.title('全图预览')
-    #     # topframe = tk.Frame(toplevel)
-    #     # topframe.grid()
-    #     # map_canvas = tk.Canvas(topframe, width=1024, height=int(height//2))
-    #     # map_canvas.create_image(0, 0, image=ImageTk.PhotoImage(global_img.resize((1024,int(height//2)))))
-    #     # map_canvas.grid()
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++ 界面回调方法 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
     def show_global_map_callback(self):
         width = 2048
@@ -408,18 +399,24 @@ class Mapviewer:
 
         global_img = Image.fromarray(global_arr).resize((width, int(height)))
         global_img.save('map.bmp')
-        toplevel = tk.Toplevel(width=1024, height=int(height//2))
-        toplevel.title('全图预览')
-        topframe = tk.Frame(toplevel)
-        topframe.grid()
-        map_canvas = tk.Canvas(topframe, width=1024, height=int(height//2))
-        map_canvas.img = ImageTk.PhotoImage(global_img.resize((1024,int(height//2))))
-        map_canvas.create_image(1024//2, int(height//4), image=map_canvas.img)
-        map_canvas.grid()
+
+        self.global_view_toplevel = tk.Toplevel(width=1024, height=int(height//2))
+        self.global_view_toplevel.bind('<Button-1>', self.global_view_change_focus)
+        self.global_view_toplevel.title('全图预览')
+        self.global_view_toplevel.resizable(width=False, height=False)
+        self.global_view_topframe = tk.Frame(self.global_view_toplevel)
+        self.global_view_topframe.grid()
+        self.global_viewmap_canvas = tk.Canvas(self.global_view_topframe, width=1024, height=int(height//2))
+        self.global_viewmap_canvas.img = ImageTk.PhotoImage(global_img.resize((1024,int(height//2))))
+        self.global_viewmap_canvas.create_image(1024//2, int(height//4), image=self.global_viewmap_canvas.img)
+        self.global_viewmap_canvas.grid()
+
+    def global_view_change_focus(self, event):
+        pass
 
     def mouse_pos_callback(self, event):
         try:
-            self.mouse_pos_variable.set('鼠标位置：%s, %s'%(round(self.total_map_shift[0]+self.canvas.canvasx(event.x)/self.scale, 2), -1*round(self.total_map_shift[1]+self.canvas.canvasy(event.y)/self.scale, 2)))
+            self.mouse_pos_variable.set('鼠标位置：%s, %s'%(round(self.total_map_shift[0]+(self.canvas.canvasx(event.x)-640)/self.scale, 2), -1*round(self.total_map_shift[1]+(self.canvas.canvasy(event.y)-480)/self.scale, 2)))
         except Exception as e:
             print 'mouse_pos_callback '+str(e)
 
@@ -459,7 +456,7 @@ class Mapviewer:
 
     def mil2pix_btn_callback(self):
         self.mil2pix_ratio = self.mil2pix.get()
-        self.reinit_everything()
+        self.reinitialize()
         self.center_btn_callback()
         self.grid_gap_btn_callback()
 
@@ -640,7 +637,7 @@ class Mapviewer:
         tmp = tkFileDialog.askopenfilename(**dict(defaultextension='.bin', filetypes=[('db数据库文件','*.db')]))
         if tmp!='':
             self.db_path = tmp
-            self.reinit_everything()
+            self.reinitialize()
             self.center_btn_callback()
             self.grid_gap_btn_callback()
             tkMessageBox.showinfo('提示', '地图导入完成')
@@ -845,10 +842,7 @@ class Mapviewer:
             cnt = 0
             for k in self.img_dict.keys():
                 try:
-                    if self.img_dict[k].image_back!=None:
-                        img = self.img_dict[k].image_back
-                    else:
-                        img = self.img_dict[k].image
+                    img = self.img_dict[k].image
                     print np.array(img).shape
                     curs.execute('insert into zhdl_map values (?,?,?,?,?,?)',(
                         k,
@@ -881,15 +875,12 @@ class Mapviewer:
             tkMessageBox.showerror('错误', '采集速度必须处于有效范围内 ( 0~5m/s ) ')
             return
         try:
-            self.reinit_everything(load_source='folder')
+            self.reinitialize(load_source='folder')
             try:
                 conn = sqlite3.connect(self.sql_path_val.get())
                 curs = conn.cursor()
                 for k in self.img_dict.keys():
-                    if self.img_dict[k].image_back!=None:
-                        img = self.img_dict[k].image_back
-                    else:
-                        img = self.img_dict[k].image
+                    img = self.img_dict[k].image
                     curs.execute('insert into zhdl_map values (?,?,?,?,?,?)',(
                         k,
                         self.img_dict[k].ox,
@@ -1010,55 +1001,14 @@ class Mapviewer:
     def labeled_irredundancy_callback(self):
         tkMessageBox.showinfo('提示', 'function not applied yet')
 
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ 采集功能 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-    # def open_socket_callback(self):
-    #     self.sk_top = tk.Toplevel()
-    #     self.sk_top.resizable(width=False, height=False)
-    #     self.sk_canvas = tk.Canvas(self.sk_top, width=640, height=480)
-    #     self.sk_canvas.sk_canvas_image = ImageTk.PhotoImage(Image.fromarray(np.zeros((480, 640), dtype='uint8')).resize((640, 480)))
-    #     self.sk_canvas_panel = self.sk_canvas.create_image(0, 0, image=self.sk_canvas.sk_canvas_image, anchor='nw', tags=('sk_img'))
-    #     self.sk_canvas.grid(pady=2)
-    #     self.sk_frame = tk.Frame(self.sk_top)
-    #     self.sk_frame.grid(pady=2)
-
-    #     self.sk_canvas.create_line(0, 240, 640, 240, fill='#9a9a66', width=1, dash=(5,5), tags='groundtruth')
-    #     self.sk_canvas.create_line(320, 0, 320, 480, fill='#9a9a66', width=1, dash=(5,5), tags='groundtruth')
-    #     self.sk_canvas.tag_raise('groundtruth')
-
-    #     self.sk_x_lbl = tk.Label(self.sk_frame, text='x: ')
-    #     self.sk_x_lbl.grid(row=0, column=0, padx=2)
-    #     self.sk_x_val = tk.DoubleVar()
-    #     self.sk_x_val.set(0.)
-    #     self.sk_x_ent = tk.Entry(self.sk_frame, textvariable = self.sk_x_val)
-    #     self.sk_x_ent.grid(row=0, column=1, padx=2)
-
-    #     self.sk_y_lbl = tk.Label(self.sk_frame, text='y: ')
-    #     self.sk_y_lbl.grid(row=0, column=2, padx=2)
-    #     self.sk_y_val = tk.DoubleVar()
-    #     self.sk_y_val.set(0.)
-    #     self.sk_y_ent = tk.Entry(self.sk_frame, textvariable = self.sk_y_val)
-    #     self.sk_y_ent.grid(row=0, column=3, padx=2)
-
-    #     self.sk_t_lbl = tk.Label(self.sk_frame, text='θ: ')
-    #     self.sk_t_lbl.grid(row=0, column=4, padx=2)
-    #     self.sk_t_val = tk.DoubleVar()
-    #     self.sk_t_val.set(0.)
-    #     self.sk_t_ent = tk.Entry(self.sk_frame, textvariable = self.sk_t_val)
-    #     self.sk_t_ent.grid(row=0, column=5, padx=2)
-
-    #     self.sk_commit_btn = tk.Button(self.sk_frame, text='导入图像', command=self.sk_commit_btn_callback)
-    #     self.sk_commit_btn.grid(row=0, column=6, padx=2)
-
-    #     # self.socket_loop_stop = threading.Event()
-    #     self.socket_loop_thread = threading.Thread(target=self.socket_loop)
-    #     self.socket_loop_thread.start()
-
-    #     self.sk_top.protocol('WM_DELETE_WINDOW', self.on_sk_closing)
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++ 图像采集界面 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
     def open_socket_callback(self):
         if self.sk_top_alive == True:
             tkMessageBox.showwarning('错误', '已有打开的采集窗口')
+            return
+        if not self.sock_open_flag:
+            tkMessageBox.showwarning('错误', '未检测到摄像头连接')
             return
 
         self.sk_top = tk.Toplevel()
@@ -1068,6 +1018,7 @@ class Mapviewer:
         self.sk_right.grid(row=0, column=1, padx=2, pady=2)
         self.sk_top.resizable(width=False, height=False)
 
+        # TODO: 添加双击listbox中item，显示对应的图像
         self.sk_listbox_val = tk.StringVar()
         self.sk_listbox_val.set('')
         self.sk_listbox_lbl = tk.Label(self.sk_left, textvariable=self.sk_listbox_val)
@@ -1098,7 +1049,6 @@ class Mapviewer:
         self.sk_x_val = tk.DoubleVar()
         self.sk_x_val.set(0.)
         self.sk_x_ent = tk.Entry(self.sk_frame, textvariable=self.sk_x_val)
-        # self.sk_x_ent = tk.Entry(self.sk_frame, textvariable=self.sk_x_val, validate='focus', validatecommand=self.sk_focus_validate)
         self.sk_x_ent.grid(row=0, column=1, padx=2)
 
         self.sk_y_lbl = tk.Label(self.sk_frame, text='y: ')
@@ -1150,6 +1100,7 @@ class Mapviewer:
     def socket_loop(self):
         self.sock = sk.socket(sk.AF_INET, sk.SOCK_DGRAM)
         self.sock.bind(('192.168.1.11', 20014))
+        self.sock_open_flag = True
 
         self.sk_frame_id = 0
         self.sk_frame_id_curr = 0
@@ -1214,50 +1165,19 @@ class Mapviewer:
         except Exception as e:
             print 'sk_commit_btn_callback '+str(e)
 
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ 功能函数 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-    # def reinit_everything(self, load_source='db'):
-    #     self.dragged_item = tk.ALL
-    #     self.imgsize = 320
-    #     self.current_coords = 0, 0
-    #     self.total_map_shift = (0, 0)
-    #     self.width = 1280
-    #     self.height = 960
-    #     self.scale = 1.0
-    #     self.img_dict = {}
-    #     self.grid_horz = []
-    #     self.grid_vert = []
-    #     self.last_canvx, self.last_canvy = 0, 0
-    #     self.window = [(0, 1280), (0, 960)]
-    #     self.factor = 1.1
-    #     self.maxx, self.maxy = 0, 0
-    #     self.mutex = False
-    #     self.mutex_unlock_count = 0
-    #     self.edit_mod_flag = False
-    #     self.edit_history = []
-    #     self.x_axis_gap_val = 1000
-    #     self.y_axis_gap_val = 1000
-    #     self.dragging_img_set = set()
-    #     self.modify_img_dict = {}
-    #     self.edit_history_listbox.delete(0, tk.END)
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++ 全局图像界面 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-    #     self.zoom_scale.set('缩放系数：1.0')
 
-    #     self.imgsize = int(320*self.mil2pix_ratio)
-    #     if load_source=='db':
-    #         self.img_load_db()
-    #     else:
-    #         self.img_load_folder()
-    #     self.init_binding()
-    #     self.calc_visible(False)
-    #     self.grid_load()
 
-    def reinit_everything(self, load_source='db'):
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++ 后台工具方法 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+    def reinitialize(self, load_source='db'):
         self.dragged_item = tk.ALL
         self.imgsize = 320
         self.current_coords = 0, 0
         self.current_angle = 0.
-        self.total_map_shift = (0, 0)
+        self.total_map_shift = (640, 480)
         self.width = 1280
         self.height = 960
         self.scale = 1.0
@@ -1409,51 +1329,55 @@ class Mapviewer:
 
     def calc_visible(self, is_scale):
         print 'total shift: %s,%s'%(self.total_map_shift)
-        # size = int(self.imgsize*self.scale)
         show_cnt = 0
         self.canvas.delete(tk.ALL)
         self.tk_dict = {}
+        # ----------------------------------------过滤----------------------------------------
         for k in sorted(self.img_dict.keys()):
             if self.img_dict[k].x+self.imgsize*self.scale>self.window[0][0] and self.img_dict[k].x<self.window[0][1] and self.img_dict[k].y+self.imgsize*self.scale>self.window[1][0] and self.img_dict[k].y<self.window[1][1]:
                 show_cnt += 1
-                # print 'show!\twindow:%s, coord:%s'%(str(self.window), str((self.img_dict[k].x, self.img_dict[k].y)))
+                # 采样
                 if self.scale<0.2 and self.scale>0.1 and show_cnt%2==0:
                     continue
-                    # pass 
                 if self.scale<0.1 and show_cnt%3!=0:
                     continue
                 size = int(self.img_dict[k].image.size[0]*self.scale*self.mil2pix_ratio)
-                # if self.img_dict[k].rot != 0:
+                # 判断是否有box
+                if self.img_dict[k].boxed:
+                    curr_img = self.img_dict[k].image_boxed
+                else:
+                    curr_img = self.img_dict[k].image
                 if self.scale>=0.75:
-                    swap_arr = np.array(self.img_dict[k].image.convert('RGBA'))
+                    swap_arr = np.array(curr_img.convert('RGBA'))
                     swap_arr[:,:,3] = (swap_arr[:,:,0]+swap_arr[:,:,1]+swap_arr[:,:,2]!=0)*swap_arr[:,:,3]
                     swap_img = Image.fromarray(swap_arr.astype('uint8')).rotate(self.img_dict[k].rot+self.img_dict[k].theta, expand=True)
                     swap_siz = int(swap_img.size[0]*self.scale*self.mil2pix_ratio)
                     self.tk_dict[k] = ImageTk.PhotoImage(swap_img.resize((swap_siz, swap_siz), resample=Image.LANCZOS))
                 else:
-                    if self.img_dict[k].image_back != None:
-                        self.tk_dict[k] = ImageTk.PhotoImage(self.img_dict[k].image.resize((size, size), resample=Image.LANCZOS))
+                    if self.img_dict[k].boxed:
+                        self.tk_dict[k] = ImageTk.PhotoImage(curr_img.resize((size, size), resample=Image.LANCZOS))
                     else:
-                        self.tk_dict[k] = ImageTk.PhotoImage(self.img_dict[k].image.resize((size, size)))
+                        self.tk_dict[k] = ImageTk.PhotoImage(curr_img.resize((size, size)))
             else:
                 pass
+        # ----------------------------------------绘制----------------------------------------
+        shift = self.imgsize*self.scale//2
         for k in sorted(self.tk_dict.keys()):
-            # if self.img_dict[k].rot != 0.:
-            shift = (self.tk_dict[k].width()-self.imgsize*self.scale)//2
             if k == self.selected_node_id_int:
                 self.canvas.create_image(self.img_dict[k].x-shift, self.img_dict[k].y-shift, image=self.tk_dict[k], anchor='nw', tags=('img', k, 'selected'))
             else:
                 self.canvas.create_image(self.img_dict[k].x-shift, self.img_dict[k].y-shift, image=self.tk_dict[k], anchor='nw', tags=('img', k))
         if self.show_grid_flag:
             for e in self.grid_vert: 
-                self.canvas.create_line(e[0], e[1], e[2], e[3], fill='purple', width=self.grid_line_width, tags='coordline')
+                self.canvas.create_line(e[0]-shift, e[1]-shift, e[2]-shift, e[3]-shift, fill='purple', width=self.grid_line_width, tags='coordline')
             for e in self.grid_horz:
-                self.canvas.create_line(e[0], e[1], e[2], e[3], fill='purple', width=self.grid_line_width, tags='coordline')
+                self.canvas.create_line(e[0]-shift, e[1]-shift, e[2]-shift, e[3]-shift, fill='purple', width=self.grid_line_width, tags='coordline')
             self.canvas.tag_raise('coordline')
-        self.canvas.create_line(self.coord_central[0],-1e7,self.coord_central[0],1e7, width=self.coord_line_width, fill='blue', tags='baseline')
-        self.canvas.create_line(-1e7,self.coord_central[1],1e7,self.coord_central[1], width=self.coord_line_width, fill='blue', tags='baseline')
+        self.canvas.create_line(0, 480, 1280, 480, fill='blue', tags='baseline')
+        self.canvas.create_line(640, 0, 640, 960, fill='blue', tags='baseline')
         self.canvas.tag_raise('baseline')
-        # print 'current showing %s tiles with size %s, scale %s'%(show_cnt, size, self.scale)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++ 初始化方法 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
     def init_binding(self):
         self.canvas.bind('<ButtonPress-1>', self.start_drag)
@@ -1469,7 +1393,7 @@ class Mapviewer:
         self.canvas.bind('<Double-Button-1>', self.mouse_db_click_callback)
         self.edit_history_listbox.bind('<Button-1>', self.edit_single_click_callback)
 
-    def run(self):
+    def init_mainpage(self):
         self.root = tk.Tk()
         self.root.iconbitmap(default= os.path.join(os.getcwd(), 'quick.ico'))
         # self.imgicon = ImageTk.PhotoImage(file=os.path.join(os.getcwd(),'quick.ico'))
@@ -1477,10 +1401,8 @@ class Mapviewer:
         self.root.title('Quicktron Texture Location Map Dispalyer')
         self.root.geometry('{}x{}'.format(1400,960))
 
-        # self.top_frame = tk.Frame(self.root, height=30)
         self.control_frame = tk.Frame(self.root, width=120, height=960)
         self.canvas_frame = tk.Frame(self.root, width=1280, height=960)
-        # self.top_frame.grid(row=0, columnspan=2, sticky='w')
         self.control_frame.grid(row=0, column=0, sticky='n')
         self.canvas_frame.grid(row=0, column=1, sticky='e')
 
@@ -1515,7 +1437,7 @@ class Mapviewer:
 
         self.donothing_t_3 = tk.Frame(self.control_frame, height=8, width=120)
         self.donothing_t_3.grid()
-        self.show_global_map_btn = tk.Button(self.control_frame, text='点击查看全局地图', command=self.show_global_map_callback)
+        self.show_global_map_btn = tk.Button(self.control_frame, text='全局地图', command=self.show_global_map_callback)
         self.show_global_map_btn.grid(sticky='', pady=2)
 
         self.donothing_0_1 = tk.Frame(self.control_frame, height=8, width=120)
@@ -1649,7 +1571,6 @@ class Mapviewer:
         self.coord_width_val = tk.DoubleVar()
         self.sk_path_val = tk.StringVar()
         self.sk_path_val.set('')
-        # self.sk_path_val.set('D:/Workspace/map/map_dragging_validate/py/gather/')
 
         self.img_path_val = tk.StringVar()
         self.img_path_val.set('D:/')
@@ -1662,17 +1583,21 @@ class Mapviewer:
         self.sample_rate_val = tk.DoubleVar()
         self.sample_rate_val.set(1.0)
        
+        self.global_view_toplevel = None
+
         self.root.resizable(width=False, height=False)
         self.root.configure(menu=self.menubar)
-        self.reinit_everything()
+        self.reinitialize()
 
-        self.socket_loop_thread = threading.Thread(target=self.socket_loop)
-        self.socket_loop_thread.daemon = True
-        self.socket_loop_thread.start()
+    def run(self):
+        self.init_mainpage()
 
-        main_loop_thread = threading.Thread(target=self.root.mainloop)
-        main_loop_thread.run()
-        # self.root.mainloop()
+        # self.socket_loop_thread = threading.Thread(target=self.socket_loop)
+        # self.socket_loop_thread.daemon = True
+        # self.socket_loop_thread.start()
+
+        self.main_loop_thread = threading.Thread(target=self.root.mainloop)
+        self.main_loop_thread.run()
 
 if __name__ == '__main__':
     mv = Mapviewer()
