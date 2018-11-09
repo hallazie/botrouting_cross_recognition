@@ -120,6 +120,8 @@ class Mapviewer:
         self.show_grid_flag = True
         self.edit_delete_flag = False
         self.enter_label_mod = False
+        self.progress_total = 0
+        self.progress_current = 0
 
         # socket vars 
         self.sk_top_alive = False
@@ -462,10 +464,11 @@ class Mapviewer:
 
     def center_btn_callback(self):
         # TODO: fix bug
-        # bug - 当改变中心点坐标时，图像与网格基准坐标都发生了改变
-        self.coord_central = ((self.left_top_x.get()-self.total_map_shift[0]+self.imgsize//2)*self.scale, -1*(self.left_top_y.get()+self.total_map_shift[1]-self.imgsize//2)*self.scale)
-        # self.change_focus(self.coord_central[0], self.coord_central[1])
-        self.calc_visible(False)
+        # # bug - 当改变中心点坐标时，图像与网格基准坐标都发生了改变
+        # self.coord_central = ((self.left_top_x.get()-self.total_map_shift[0]+self.imgsize//2)*self.scale, -1*(self.left_top_y.get()+self.total_map_shift[1]-self.imgsize//2)*self.scale)
+        # # self.change_focus(self.coord_central[0], self.coord_central[1])
+        # self.calc_visible(False)
+        self.change_focus(self.left_top_x.get(), self.left_top_y.get())
 
     def grid_gap_btn_callback(self):
         self.x_axis_gap_val = self.x_axis_gap.get()
@@ -752,11 +755,6 @@ class Mapviewer:
 
     def folder_to_sqlite_callback(self):
         self.tl_sql_export = tk.Toplevel()
-        # self.img_path_val = tk.StringVar()
-        # self.sql_path_val = tk.StringVar()
-        # self.sql_table_val = tk.StringVar()
-        # self.sample_equipnum_val = tk.StringVar()
-        # self.sample_rate_val = tk.DoubleVar()
 
         img_path_lbl_frame = tk.Frame(self.tl_sql_export)
         img_path_lbl_frame.grid(pady=2)
@@ -1167,8 +1165,15 @@ class Mapviewer:
 
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++ 全局图像界面 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    
 
 
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++ 全局进度浮窗 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+    def init_progressbar(self):
+        self.progress_toplevel = tk.Toplevel()
+        self.progress_lbl = tk.Label(self.progress_toplevel, textvariable=self.progress_msg)
+        self.progress_lbl.pack(padx = 120, pady = 40)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++ 后台工具方法 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -1251,6 +1256,7 @@ class Mapviewer:
         try:
             conn = sqlite3.connect(self.db_path)
             curs = conn.cursor()
+            # cnt = curs.execute('select count(id) from zhdl_map').next()[0]
             res = curs.execute('select id, x, y, heading, processed_image, raw_image from zhdl_map')
             img_cnt = 0
             while True:
@@ -1273,6 +1279,7 @@ class Mapviewer:
                     break
             conn.close()
         except Exception as e:
+            print e
             tkMessageBox.showinfo('提示', '请在选项中正确配置数据库文件地址')
             res = iter([])
 
@@ -1303,16 +1310,19 @@ class Mapviewer:
     def img_edit_2_db(self):
         pass
 
-    # def change_focus(self, x, y):
-    #     dx = (x-self.total_map_shift[0])/self.scale
-    #     dy = (y-self.total_map_shift[1])/self.scale
-    #     for k in self.img_dict.keys():
-    #         self.img_dict[k].x += dx
-    #         self.img_dict[k].y += dy
-    #     for i in range(len(self.grid_vert)):
-    #         self.grid_vert[i] = (self.grid_vert[i][0], self.grid_vert[i][1]+dy, self.grid_vert[i][2], self.grid_vert[i][3]+dy)
-    #     for j in range(len(self.grid_horz)):
-    #         self.grid_horz[j] = (self.grid_horz[j][0]+dx, self.grid_horz[j][1], self.grid_horz[j][2]+dx, self.grid_horz[j][3])
+    def change_focus(self, x, y):
+        dx = -1*(x-self.total_map_shift[0])*self.scale
+        dy = (y+self.total_map_shift[1])*self.scale
+        print str((dx, dy))
+        self.total_map_shift = (x, -1*y)
+        for k in self.img_dict.keys():
+            self.img_dict[k].x += dx
+            self.img_dict[k].y += dy
+        for i in range(len(self.grid_vert)):
+            self.grid_vert[i] = (self.grid_vert[i][0], self.grid_vert[i][1]+dy, self.grid_vert[i][2], self.grid_vert[i][3]+dy)
+        for j in range(len(self.grid_horz)):
+            self.grid_horz[j] = (self.grid_horz[j][0]+dx, self.grid_horz[j][1], self.grid_horz[j][2]+dx, self.grid_horz[j][3])
+        self.calc_visible(False)
 
     def export_edit_history(self):
         export_file_name = '-'.join(str(datetime.datetime.now()).split(' ')).replace(':', '-')+'.txt'
@@ -1584,6 +1594,7 @@ class Mapviewer:
         self.sample_rate_val.set(1.0)
        
         self.global_view_toplevel = None
+        self.progress_msg = tk.StringVar()
 
         self.root.resizable(width=False, height=False)
         self.root.configure(menu=self.menubar)
