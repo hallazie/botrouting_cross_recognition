@@ -132,7 +132,7 @@ class Mapviewer:
         self.sock_open_flag = False
 
         # global view vars
-        # None
+        self.global_view_flag = False
         
         # preference vars
         self.grid_line_width = 1
@@ -152,27 +152,18 @@ class Mapviewer:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++ 画布鼠标方法 +++++++++++++++++++++++++++++++++++++++++++++++++++
 
-    def start_drag(self, event):
-        # result = self.canvas.find_withtag('current')
+    def start_drag_item(self, event):
         result = self.canvas.gettags('current')
         if len(result)>2:
             self.dragged_item = int(result[1])
         else:
             self.dragged_item = tk.ALL
         self.current_coords = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
-        self.drag_start = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
 
-    def stop_drag(self, event):
-        self.drag_end = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
-        try:
-            if self.dragged_item==tk.ALL or self.edit_mod_flag==False:
-                self.calc_visible(False)
-        except Exception as e:
-            print 'stop_drag err'
-            traceback.print_exc()
-        self.dragged_item = tk.ALL
+    def stop_drag_item(self, event):
+        pass
 
-    def drag(self, event):
+    def drag_item(self, event):
         try:
             xc, yc = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
             dx, dy = xc-self.current_coords[0], yc-self.current_coords[1]
@@ -182,6 +173,8 @@ class Mapviewer:
             if self.dragged_item != tk.ALL and self.edit_mod_flag==True and self.img_dict[self.dragged_item].fixed==False:
                 # 拖拽编辑模式
                 self.canvas.tag_raise('current')
+                self.canvas.tag_raise('coordline')
+                self.canvas.tag_raise('baseline')
                 if self.dragged_item not in self.modify_img_dict.keys():
                     self.modify_img_dict[self.dragged_item] = (0,0)
                 self.dragging_img_set.add(self.dragged_item)
@@ -190,25 +183,72 @@ class Mapviewer:
                 self.img_dict[self.dragged_item].x += dx
                 self.img_dict[self.dragged_item].y += dy
                 self.modify_img_dict[self.dragged_item] = (self.modify_img_dict[self.dragged_item][0]+dx/self.scale, self.modify_img_dict[self.dragged_item][1]+dy/self.scale)
-            else:
-                self.canvas.delete('baseline')
-                self.canvas.move(tk.ALL, dx, dy)
-                self.canvas.create_line(640,0,640,960, fill='blue', tags='baseline')
-                self.canvas.create_line(0,480,1280,480, fill='blue', tags='baseline')
-                for k in self.img_dict.keys():
-                    self.img_dict[k].x += dx
-                    self.img_dict[k].y += dy
-                for i in range(len(self.grid_vert)):
-                    self.grid_vert[i] = (self.grid_vert[i][0], self.grid_vert[i][1]+dy, self.grid_vert[i][2], self.grid_vert[i][3]+dy)
-                for j in range(len(self.grid_horz)):
-                    self.grid_horz[j] = (self.grid_horz[j][0]+dx, self.grid_horz[j][1], self.grid_horz[j][2]+dx, self.grid_horz[j][3])
-                self.coord_central = (self.coord_central[0]+dx, self.coord_central[1]+dy)
+            # else:
+            #     self.canvas.delete('baseline')
+            #     self.canvas.move(tk.ALL, dx, dy)
+            #     self.canvas.create_line(640,0,640,960, fill='blue', tags='baseline')
+            #     self.canvas.create_line(0,480,1280,480, fill='blue', tags='baseline')
+            #     for k in self.img_dict.keys():
+            #         self.img_dict[k].x += dx
+            #         self.img_dict[k].y += dy
+            #     for i in range(len(self.grid_vert)):
+            #         self.grid_vert[i] = (self.grid_vert[i][0], self.grid_vert[i][1]+dy, self.grid_vert[i][2], self.grid_vert[i][3]+dy)
+            #     for j in range(len(self.grid_horz)):
+            #         self.grid_horz[j] = (self.grid_horz[j][0]+dx, self.grid_horz[j][1], self.grid_horz[j][2]+dx, self.grid_horz[j][3])
+            #     self.coord_central = (self.coord_central[0]+dx, self.coord_central[1]+dy)
         except Exception as e:
             print 'drag '+str(e)
+
+    def start_drag_canvas(self, event):
+        self.root.config(cursor='fleur')
+        self.dragged_item = tk.ALL
+        self.current_coords = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+
+    def stop_drag_canvas(self, event):
+        self.root.config(cursor='arrow')
+        self.calc_visible(False)
+
+    def drag_canvas(self, event):
+        try:
+            xc, yc = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+            dx, dy = xc-self.current_coords[0], yc-self.current_coords[1]
+            self.total_map_shift = self.total_map_shift[0]-dx/self.scale, self.total_map_shift[1]-dy/self.scale
+            curr_img_id = self.canvas.find_withtag('current')
+            self.current_coords = xc, yc
+            # if self.dragged_item != tk.ALL and self.edit_mod_flag==True and self.img_dict[self.dragged_item].fixed==False:
+            #     # 拖拽编辑模式
+            #     self.canvas.tag_raise('current')
+            #     self.canvas.tag_raise('coordline')
+            #     self.canvas.tag_raise('baseline')
+            #     if self.dragged_item not in self.modify_img_dict.keys():
+            #         self.modify_img_dict[self.dragged_item] = (0,0)
+            #     self.dragging_img_set.add(self.dragged_item)
+            #     self.canvas.move(curr_img_id, dx, dy)
+            #     self.img_dict[self.dragged_item].enter_boundingbox(0)
+            #     self.img_dict[self.dragged_item].x += dx
+            #     self.img_dict[self.dragged_item].y += dy
+            #     self.modify_img_dict[self.dragged_item] = (self.modify_img_dict[self.dragged_item][0]+dx/self.scale, self.modify_img_dict[self.dragged_item][1]+dy/self.scale)
+            # else:
+            self.canvas.delete('baseline')
+            self.canvas.move(tk.ALL, dx, dy)
+            self.canvas.create_line(640,0,640,960, fill='blue', tags='baseline')
+            self.canvas.create_line(0,480,1280,480, fill='blue', tags='baseline')
+            for k in self.img_dict.keys():
+                self.img_dict[k].x += dx
+                self.img_dict[k].y += dy
+            for i in range(len(self.grid_vert)):
+                self.grid_vert[i] = (self.grid_vert[i][0], self.grid_vert[i][1]+dy, self.grid_vert[i][2], self.grid_vert[i][3]+dy)
+            for j in range(len(self.grid_horz)):
+                self.grid_horz[j] = (self.grid_horz[j][0]+dx, self.grid_horz[j][1], self.grid_horz[j][2]+dx, self.grid_horz[j][3])
+            self.coord_central = (self.coord_central[0]+dx, self.coord_central[1]+dy)
+        except Exception as e:
+            print 'drag '+str(e)
+
 
     def start_rotate(self, event):
         if self.edit_mod_flag:
             self.current_angle = self.canvas.canvasy(event.x)
+        self.calc_visible(False)
 
     def stop_rotate(self, event):
         if self.edit_mod_flag:
@@ -234,7 +274,9 @@ class Mapviewer:
                     self.rotate_arr[:,:,3] = (self.rotate_arr[:,:,0]+self.rotate_arr[:,:,1]+self.rotate_arr[:,:,2]!=0)*self.rotate_arr[:,:,3]
                     self.rotate_img = Image.fromarray(self.rotate_arr.astype('uint8')).resize((int(self.imgsize*self.scale), int(self.imgsize*self.scale))).rotate(self.img_dict[self.selected_node_id_int].theta+self.current_rotate*0.1+self.img_dict[self.selected_node_id_int].rot, expand=True)
                     self.rotaet_tkimg = ImageTk.PhotoImage(self.rotate_img)
-                    shift = (self.rotate_img.size[0]-self.imgsize*self.scale)/2.
+                    print self.rotate_img.size[0]
+                    print self.imgsize*self.scale
+                    shift = (self.rotate_img.size[0])/2.
                     self.canvas.create_image((self.img_dict[self.selected_node_id_int].x-shift, self.img_dict[self.selected_node_id_int].y-shift), image=self.rotaet_tkimg, anchor='nw', tags=('img', self.selected_node_id_int, 'selected'))
                     self.edit_rotate_val.set('图像：%s，旋转角度：%s°'%(self.selected_node_id_int, round(self.img_dict[self.selected_node_id_int].rot+self.current_rotate*0.1, 2)))
             except Exception as e:
@@ -381,41 +423,6 @@ class Mapviewer:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++ 界面回调方法 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-    def show_global_map_callback(self):
-        width = 2048
-        height = float(width)*(self.maxy/float(self.maxx))
-        global_img = np.zeros((int(width*self.mil2pix_ratio),int(height*self.mil2pix_ratio)))
-        scale = float(width)*self.mil2pix_ratio/(self.maxx+1000)
-        err_cnt = 0
-        for k in self.img_dict.keys():
-            try:
-                imgobj = self.img_dict[k]
-                x, y = int(scale*imgobj.ox), int(scale*imgobj.oy)
-                w, h = int(imgobj.image.size[0]*scale*self.mil2pix_ratio), int(imgobj.image.size[1]*scale*self.mil2pix_ratio)
-                imgarr = np.array(imgobj.image.resize((w, h)))
-                global_img[x:x+w, y:y+h] = imgarr
-            except:
-                err_cnt += 1
-        print 'total err when constructing global img: %s'%err_cnt
-        global_arr = global_img.transpose().astype('uint8')
-
-        global_img = Image.fromarray(global_arr).resize((width, int(height)))
-        global_img.save('map.bmp')
-
-        self.global_view_toplevel = tk.Toplevel(width=1024, height=int(height//2))
-        self.global_view_toplevel.bind('<Button-1>', self.global_view_change_focus)
-        self.global_view_toplevel.title('全图预览')
-        self.global_view_toplevel.resizable(width=False, height=False)
-        self.global_view_topframe = tk.Frame(self.global_view_toplevel)
-        self.global_view_topframe.grid()
-        self.global_viewmap_canvas = tk.Canvas(self.global_view_topframe, width=1024, height=int(height//2))
-        self.global_viewmap_canvas.img = ImageTk.PhotoImage(global_img.resize((1024,int(height//2))))
-        self.global_viewmap_canvas.create_image(1024//2, int(height//4), image=self.global_viewmap_canvas.img)
-        self.global_viewmap_canvas.grid()
-
-    def global_view_change_focus(self, event):
-        pass
-
     def mouse_pos_callback(self, event):
         try:
             self.mouse_pos_variable.set('鼠标位置：%s, %s'%(round(self.total_map_shift[0]+(self.canvas.canvasx(event.x)-640)/self.scale, 2), -1*round(self.total_map_shift[1]+(self.canvas.canvasy(event.y)-480)/self.scale, 2)))
@@ -440,8 +447,10 @@ class Mapviewer:
                 for k in self.img_dict.keys():
                     self.img_dict[k].leave_boundingbox()
                 self.img_dict[curr_img_id].enter_boundingbox(1)
-                self.canvas.tag_raise('current')
                 self.calc_visible(False)
+                self.canvas.tag_raise('current')
+                self.canvas.tag_raise('coordline')
+                self.canvas.tag_raise('baseline')
             else:
                 for k in self.img_dict.keys():
                     self.img_dict[k].leave_boundingbox()                
@@ -510,6 +519,8 @@ class Mapviewer:
         if self.using_db:
             result = tkMessageBox.askquestion('提示', '确认提交修改？', icon='warning')
             if result == 'yes':
+                # if self.global_view_flag:
+                #     self.global_image_gen()
                 if self.edit_mod_flag:
                     tkMessageBox.showwarning('提示', '请先退出编辑模式')
                     return
@@ -519,16 +530,9 @@ class Mapviewer:
                 try:
                     conn = sqlite3.connect(self.db_path)
                     curs = conn.cursor()
-                    # res = curs.execute('select id, x, y, heading, processed_image, raw_image from zhdl_map')
                 except Exception as e:
                     tkMessageBox.showinfo('提示', '请在选项中正确配置数据库文件地址')
                 try:
-                    # for item in self.edit_history_listbox.get(0, tk.END):
-                    #     imgobj = self.img_dict[int(item.split('  ')[0].split(':')[1])]
-                    #     shiftx = float(item.split('  ')[1].split(':')[1])
-                    #     shifty = float(item.split('  ')[2].split(':')[1])
-                    #     curs.execute('update zhdl_map set x=%s, y=%s where id=%s'%(imgobj.ox+shiftx, imgobj.oy+shifty, imgobj.idx))
-                    #     conn.commit()
                     for k in self.modify_img_dict:
                         # rot = abs(self.img_dict[k].rot)%90
                         # if rot < 45:
@@ -536,8 +540,10 @@ class Mapviewer:
                         # else:
                         #     rat = 1/math.sin(((rot)/180.)*math.pi)
                         # rot_shift = -1*self.mil2pix_ratio*(320*(rat-1)/2)
-                        rot_shift = 0
-                        curs.execute('update zhdl_map set x=%s, y=%s, heading=%s where id=%s'%(self.img_dict[k].ox+self.modify_img_dict[k][0]+rot_shift, -1*(self.img_dict[k].oy+self.modify_img_dict[k][1]+rot_shift), self.img_dict[k].theta+self.img_dict[k].rot, k))
+                        self.img_dict[k].ox += self.modify_img_dict[k][0]
+                        self.img_dict[k].oy += self.modify_img_dict[k][1]
+                        self.img_dict[k].theta += self.img_dict[k].rot
+                        curs.execute('update zhdl_map set x=%s, y=%s, heading=%s where id=%s'%(self.img_dict[k].ox, -1*(self.img_dict[k].oy), self.img_dict[k].theta, k))
                         conn.commit()
                     conn.close()
                     tkMessageBox.showinfo('提示', '提交修改成功')
@@ -642,7 +648,7 @@ class Mapviewer:
             self.db_path = tmp
             self.reinitialize()
             self.center_btn_callback()
-            self.grid_gap_btn_callback()
+            # self.grid_show_btn_callback()
             tkMessageBox.showinfo('提示', '地图导入完成')
             with open('mapviewer.cfg', 'w+') as f:
                 for line in f.readlines():
@@ -901,14 +907,10 @@ class Mapviewer:
 
     def import_labeled_set_callback(self):
         self.using_db = False
+        self.loading_disable()
         if not self.enter_label_mod:
+            self.reinitialize_params()
             self.enter_label_mod = True
-            self.img_dict = {}
-            self.grid_horz = []
-            self.grid_vert = []
-            self.scale = 1.0
-            self.maxx, self.maxy = 0, 0
-            self.total_map_shift = 0, 0
         img_path = tkFileDialog.askdirectory()
         fs = []
         # TODO：添加根据固定文件名格式判断图像是否为有效地图文件
@@ -917,43 +919,51 @@ class Mapviewer:
                 if f.lower().endswith('.bmp'):
                     fs.append(f)
         cnt = 0
-        for f in fs:
-            try:
-                # img = Image.open(img_path+'/'+f).resize((self.imgsize,self.imgsize))
-                img = Image.open(img_path+'/'+f).resize((320,320))
-                idx, curx, cury, theta = int(f.split('_')[0]), float(f.split('_')[1]), float(f.split('_')[2]), float(f.split('_')[3].split('.')[0])
-                if idx in self.img_dict.keys():
-                    continue
-                imgobj = Imgobj(idx=idx,
-                                image=img,
-                                x=curx,
-                                y=-1*cury,
-                                theta=theta)
-                imgobj.labeled = True
-                imgobj.x = (imgobj.x-self.total_map_shift[0])*self.scale
-                imgobj.y = (imgobj.y-self.total_map_shift[1])*self.scale
-                self.img_dict[idx] = imgobj
-                self.maxx = max(self.maxx, curx)
-                self.maxy = max(self.maxy, cury)
-                cnt += 1
-            except:
-                pass
-        if cnt == 0:
-            tkMessageBox.showinfo('提示', '当前文件夹无有效地图数据文件')
-            return  
-        tkMessageBox.showinfo('提示', '标注集读取成功，新增 %s 张样本'%cnt)
-        self.calc_visible(False)
+        self.progress['maximum'] = len(fs)
+        self.progress['value'] = 0
+        self.progress_msg.set('  正在载入')
+        try:
+            for f in fs:
+                try:
+                    img = Image.open(img_path+'/'+f).resize((320,320))
+                    idx, curx, cury, theta = int(f.split('_')[0]), float(f.split('_')[1]), float(f.split('_')[2]), float(f.split('_')[3].split('.')[0])
+                    if idx in self.img_dict.keys():
+                        continue
+                    imgobj = Imgobj(idx=idx,
+                                    image=img,
+                                    x=curx,
+                                    y=-1*cury,
+                                    theta=theta)
+                    imgobj.labeled = True
+                    imgobj.x = (imgobj.x - self.total_map_shift[0]) * self.scale + 640
+                    imgobj.y = (imgobj.y - self.total_map_shift[1]) * self.scale + 480
+                    self.img_dict[idx] = imgobj
+                    self.maxx = max(self.maxx, curx)
+                    self.maxy = max(self.maxy, cury)
+                    cnt += 1
+                    self.progress['value'] = cnt
+                    self.progress.update()
+                except:
+                    pass
+            if cnt == 0:
+                tkMessageBox.showinfo('提示', '当前文件夹无有效地图数据文件')
+                return
+            self.progress.stop()
+            self.progress_msg.set('  载入完成')
+            tkMessageBox.showinfo('提示', '标注集读取成功，新增 %s 张样本'%cnt)
+            self.grid_load()
+            self.calc_visible(False)
+        except Exception as e:
+            pass
+        finally:
+            self.loading_enable()
 
     def import_raw_set_callback(self):
         self.using_db = False
+        self.loading_disable()
         if not self.enter_label_mod:
+            self.reinitialize_params()
             self.enter_label_mod = True
-            self.img_dict = {}
-            self.grid_horz = []
-            self.grid_vert = []
-            self.scale = 1.0
-            self.maxx, self.maxy = 0, 0
-            self.total_map_shift = 0, 0
         img_path = tkFileDialog.askdirectory()
         fs = []
         # TODO：添加根据固定文件名格式判断图像是否为有效地图文件
@@ -962,32 +972,45 @@ class Mapviewer:
                 if f.lower().endswith('.bmp'):
                     fs.append(f)
         cnt = 0
-        for f in fs:
-            try:
-                # img = Image.open(img_path+'/'+f).resize((self.imgsize,self.imgsize))
-                img = Image.open(img_path+'/'+f).resize((320,320))
-                idx, curx, cury, theta = int(f.split('_')[0]), float(f.split('_')[1]), float(f.split('_')[2]), float(f.split('_')[3].split('.')[0])
-                if idx in self.img_dict.keys():
-                    continue
-                imgobj = Imgobj(idx=idx,
-                                image=img,
-                                x=curx,
-                                y=-1*cury,
-                                theta=theta)
-                imgobj.labeled = False
-                imgobj.x = (imgobj.x-self.total_map_shift[0])*self.scale
-                imgobj.y = (imgobj.y-self.total_map_shift[1])*self.scale
-                self.img_dict[idx] = imgobj
-                self.maxx = max(self.maxx, curx)
-                self.maxy = max(self.maxy, cury)
-                cnt += 1
-            except:
-                pass
-        if cnt == 0:
-            tkMessageBox.showinfo('提示', '当前文件夹无有效地图数据文件')
-            return            
-        tkMessageBox.showinfo('提示', '未标注集读取成功，新增 %s 张样本'%cnt)
-        self.calc_visible(False)
+        self.progress['maximum'] = len(fs)
+        self.progress['value'] = 0
+        self.progress_msg.set('  正在载入')
+        try:
+            for f in fs:
+                try:
+                    # img = Image.open(img_path+'/'+f).resize((self.imgsize,self.imgsize))
+                    img = Image.open(img_path+'/'+f).resize((320,320))
+                    idx, curx, cury, theta = int(f.split('_')[0]), float(f.split('_')[1]), float(f.split('_')[2]), float(f.split('_')[3].split('.')[0])
+                    if idx in self.img_dict.keys():
+                        continue
+                    imgobj = Imgobj(idx=idx,
+                                    image=img,
+                                    x=curx,
+                                    y=-1*cury,
+                                    theta=theta)
+                    imgobj.labeled = False
+                    imgobj.x = (imgobj.x - self.total_map_shift[0]) * self.scale + 640
+                    imgobj.y = (imgobj.y - self.total_map_shift[1]) * self.scale + 480
+                    self.img_dict[idx] = imgobj
+                    self.maxx = max(self.maxx, curx)
+                    self.maxy = max(self.maxy, cury)
+                    cnt += 1
+                    self.progress['value'] = cnt
+                    self.progress.update()
+                except:
+                    pass
+            if cnt == 0:
+                tkMessageBox.showinfo('提示', '当前文件夹无有效地图数据文件')
+                return
+            self.progress.stop()
+            self.progress_msg.set('  载入完成')         
+            tkMessageBox.showinfo('提示', '未标注集读取成功，新增 %s 张样本'%cnt)
+            self.grid_load()
+            self.calc_visible(False)
+        except Exception as e:
+            pass
+        finally:
+            self.loading_enable()
 
     def fix_labeled_set_callback(self):
         # self.enter_label_mod_lock = not self.enter_label_mod_lock
@@ -1165,21 +1188,118 @@ class Mapviewer:
 
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++ 全局图像界面 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    
 
+    def show_global_map_callback(self):
+        self.global_view_flag = True
+        self.global_canvas_width = 2048
+        self.global_canvas_height = float(self.global_canvas_width)*(self.maxy/float(self.maxx))
+        global_img = np.zeros((int(self.global_canvas_width*self.mil2pix_ratio),int(self.global_canvas_height*self.mil2pix_ratio)))
+        self.global_canvas_scale = float(self.global_canvas_width)*self.mil2pix_ratio/(self.maxx+1000)
+        err_cnt = 0
+        for k in self.img_dict.keys():
+            try:
+                imgobj = self.img_dict[k]
+                x, y = int(self.global_canvas_scale*imgobj.ox), int(self.global_canvas_scale*imgobj.oy)
+                w, h = int(imgobj.image.size[0]*self.global_canvas_scale*self.mil2pix_ratio), int(imgobj.image.size[1]*self.global_canvas_scale*self.mil2pix_ratio)
+                imgarr = np.array(imgobj.image.resize((w, h)))
+                global_img[x:x+w, y:y+h] = imgarr
+            except:
+                err_cnt += 1
+        print 'total err when constructing global img: %s'%err_cnt
+        global_arr = global_img.transpose().astype('uint8')
 
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++ 全局进度浮窗 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        global_img = Image.fromarray(global_arr).resize((self.global_canvas_width, int(self.global_canvas_height)))
+        global_img.save('map.bmp')
 
-    def init_progressbar(self):
-        self.progress_toplevel = tk.Toplevel()
-        self.progress_lbl = tk.Label(self.progress_toplevel, textvariable=self.progress_msg)
-        self.progress_lbl.pack(padx = 120, pady = 40)
+        self.global_view_toplevel = tk.Toplevel(width=1024, height=int(self.global_canvas_height//2))
+        self.global_view_toplevel.bind('<Button-1>', self.global_view_change_focus)
+        self.global_view_toplevel.title('全图预览')
+        self.global_view_toplevel.resizable(width=False, height=False)
+        self.global_view_topframe = tk.Frame(self.global_view_toplevel)
+        self.global_view_topframe.grid()
+        self.global_viewmap_canvas = tk.Canvas(self.global_view_topframe, width=1024, height=int(self.global_canvas_height//2))
+        self.global_viewmap_canvas.img = ImageTk.PhotoImage(global_img.resize((1024,int(self.global_canvas_height//2))))
+        self.global_viewmap_canvas.create_image(1024//2, int(self.global_canvas_height//4), image=self.global_viewmap_canvas.img)
+        self.global_viewmap_canvas.grid()
+        self.global_viewmap_canvas.bind('<Button-1>', self.global_view_change_focus)
+        self.global_view_toplevel.protocol('WM_DELETE_WINDOW', self.on_global_closing)
+
+    def global_image_gen(self):
+        self.global_canvas_width = 2048
+        self.global_canvas_height = float(self.global_canvas_width)*(self.maxy/float(self.maxx))
+        global_img = np.zeros((int(self.global_canvas_width*self.mil2pix_ratio),int(self.global_canvas_height*self.mil2pix_ratio)))
+        self.global_canvas_scale = float(self.global_canvas_width)*self.mil2pix_ratio/(self.maxx+1000)
+        err_cnt = 0
+        for k in self.img_dict.keys():
+            try:
+                imgobj = self.img_dict[k]
+                x, y = int(self.global_canvas_scale*imgobj.ox), int(self.global_canvas_scale*imgobj.oy)
+                w, h = int(imgobj.image.size[0]*self.global_canvas_scale*self.mil2pix_ratio), int(imgobj.image.size[1]*self.global_canvas_scale*self.mil2pix_ratio)
+                imgarr = np.array(imgobj.image.resize((w, h)))
+                global_img[x:x+w, y:y+h] = imgarr
+            except:
+                err_cnt += 1
+        print 'total err when constructing global img: %s'%err_cnt
+        global_arr = global_img.transpose().astype('uint8')
+        global_img = Image.fromarray(global_arr).resize((self.global_canvas_width, int(self.global_canvas_height)))
+        self.global_viewmap_canvas.img = ImageTk.PhotoImage(global_img.resize((1024,int(self.global_canvas_height//2))))
+        self.global_viewmap_canvas.itemconfig(self.global_view_topframe, image=self.global_viewmap_canvas.img)
+
+    def on_global_closing(self):
+        self.global_view_flag = False
+        self.global_view_toplevel.destroy()
+
+    def global_view_change_focus(self, event):
+        x, y = self.global_viewmap_canvas.canvasx(event.x)/float(self.global_canvas_width//2)*(self.maxx+1000)-self.scale*self.imgsize, (1.-self.global_viewmap_canvas.canvasy(event.y)/float(self.global_canvas_height//2))*(self.maxy+1000)+self.scale*self.imgsize
+        print 'total view focus: %s | %s, %s |%s'%(x, self.maxx, y, self.maxy)
+        print self.imgsize
+        self.change_focus(x, y)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++ 后台工具方法 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-    def reinitialize(self, load_source='db'):
+    def do_nothing(self, event):
+        pass
+
+    def loading_disable(self):
+        self.root.config(cursor='wait')
+        self.canvas.config(state=tk.DISABLED)
+        self.canvas.bind('<ButtonPress-1>', self.do_nothing)
+        self.canvas.bind('<ButtonRelease-1>', self.do_nothing)
+        self.canvas.bind('<B1-Motion>', self.do_nothing)
+        self.canvas.bind('<ButtonPress-2>', self.do_nothing)
+        self.canvas.bind('<ButtonRelease-2>', self.do_nothing)
+        self.canvas.bind('<B2-Motion>', self.do_nothing)
+        self.canvas.bind('<ButtonPress-3>', self.do_nothing)
+        self.canvas.bind('<ButtonRelease-3>', self.do_nothing)
+        self.canvas.bind('<B3-Motion>', self.do_nothing)
+        self.canvas.bind_all('<MouseWheel>', self.do_nothing)
+        self.canvas.bind('<Button-4>', self.do_nothing)
+        self.canvas.bind('<Button-5>', self.do_nothing)
+        self.canvas.bind('<Motion>', self.do_nothing)
+        self.canvas.bind('<Double-Button-1>', self.do_nothing)
+        self.edit_mod_btn.config(state=tk.DISABLED)
+
+    def loading_enable(self):
+        self.root.config(cursor='')
+        self.canvas.config(state=tk.NORMAL)
+        self.canvas.bind('<ButtonPress-1>', self.start_drag_item)
+        self.canvas.bind('<ButtonRelease-1>', self.stop_drag_item)
+        self.canvas.bind('<B1-Motion>', self.drag_item)
+        self.canvas.bind('<ButtonPress-2>', self.start_drag_canvas)
+        self.canvas.bind('<ButtonRelease-2>', self.stop_drag_canvas)
+        self.canvas.bind('<B2-Motion>', self.drag_canvas)
+        self.canvas.bind('<ButtonPress-3>', self.start_rotate)
+        self.canvas.bind('<ButtonRelease-3>', self.stop_rotate)
+        self.canvas.bind('<B3-Motion>', self.rotate)
+        self.canvas.bind_all('<MouseWheel>', self.zoomer)
+        self.canvas.bind('<Button-4>', self.zoomer_up)
+        self.canvas.bind('<Button-5>', self.zoomer_dw)
+        self.canvas.bind('<Motion>', self.mouse_pos_callback)
+        self.canvas.bind('<Double-Button-1>', self.mouse_db_click_callback)
+        self.edit_mod_btn.config(state=tk.NORMAL)
+
+    def reinitialize_params(self):
         self.dragged_item = tk.ALL
-        self.imgsize = 320
         self.current_coords = 0, 0
         self.current_angle = 0.
         self.total_map_shift = (640, 480)
@@ -1206,6 +1326,7 @@ class Mapviewer:
         self.edit_history_listbox.delete(0, tk.END)
         self.zoom_scale.set('缩放系数：1.0')
         self.imgsize = int(320*self.mil2pix_ratio)
+        self.coord_central = 160*self.mil2pix_ratio, 160*self.mil2pix_ratio
 
         # new add
         self.selected_node_id_int = None
@@ -1221,20 +1342,26 @@ class Mapviewer:
         self.sk_image_idx = 0
         self.sk_image_panel = None
 
+    def reinitialize(self, load_source='db'):
+        self.reinitialize_params()
+
         if load_source=='db':
             self.img_load_db()
         else:
             self.img_load_folder()
         self.init_binding()
-        self.calc_visible(False)
         self.grid_load()
-
+        self.calc_visible(False)
+        
     def img_load_folder(self):
         self.using_db = False
         self.enter_label_mod = False
         self.img_dict = {}
         for _,_,fs in os.walk(self.img_path_val.get()):
             img_cnt = 0
+            self.progress['value'] = 0
+            self.progress['maximum'] = len(fs)
+            self.progress_msg.set('  正在载入')
             for c, f in enumerate(fs):
                 # img = Image.open(self.img_path_val.get()+'/'+f).resize((self.imgsize,self.imgsize))
                 img = Image.open(self.img_path_val.get()+'/'+f).resize((320,320))
@@ -1248,15 +1375,25 @@ class Mapviewer:
                 self.maxx = max(self.maxx, curx)
                 self.maxy = max(self.maxy, cury)
                 img_cnt += 1
+                print img_cnt
+                self.progress['value'] = img_cnt
+                self.progress.update()
             print 'current map read finished with sample number %s.'%img_cnt
+            self.progress_msg.set('  载入完成')
+            self.progress.stop()
+            break
 
     def img_load_db(self):
         self.using_db = True
         self.enter_label_mod = False
+        self.loading_disable()
         try:
             conn = sqlite3.connect(self.db_path)
             curs = conn.cursor()
-            # cnt = curs.execute('select count(id) from zhdl_map').next()[0]
+            cnt = curs.execute('select count(id) from zhdl_map').next()[0]
+            self.progress['value'] = 0
+            self.progress['maximum'] = cnt
+            self.progress_msg.set('  正在载入')
             res = curs.execute('select id, x, y, heading, processed_image, raw_image from zhdl_map')
             img_cnt = 0
             while True:
@@ -1274,35 +1411,41 @@ class Mapviewer:
                     self.maxx = max(self.maxx, data[1])
                     self.maxy = max(self.maxy, data[2])
                     img_cnt += 1
+                    self.progress['value'] = img_cnt
+                    self.progress.update()
                 except Exception as e:
                     print 'current map load finished with sample number %s.'%img_cnt
                     break
+            self.progress_msg.set('  载入完成')
+            self.progress.stop()
             conn.close()
         except Exception as e:
             print e
             tkMessageBox.showinfo('提示', '请在选项中正确配置数据库文件地址')
             res = iter([])
+        finally:
+            self.loading_enable()
 
     def grid_load(self):
         self.grid_horz = []
         self.grid_vert = []
         cx, cy = self.coord_central
-        for i in range(int(self.maxx//(self.x_axis_gap_val))):
+        for i in range(2*int(self.maxx//(self.x_axis_gap_val))):
             self.grid_horz.append((cx+(i*self.x_axis_gap_val)*self.scale,
                                 -1e7,
                                 cx+(i*self.x_axis_gap_val)*self.scale,
                                 (1e7)*self.scale))
-        for j in range(int(self.maxy//(self.y_axis_gap_val))):
+        for j in range(2*int(self.maxy//(self.y_axis_gap_val))):
             self.grid_vert.append((-1e7,
                                 cy-1*(j*self.y_axis_gap_val)*self.scale,
                                 (1e7)*self.scale,
                                 cy-1*(j*self.y_axis_gap_val)*self.scale))
-        for i in range(int(self.maxx//(self.x_axis_gap_val))):
+        for i in range(2*int(self.maxx//(self.x_axis_gap_val))):
             self.grid_horz.append((cx-(i*self.x_axis_gap_val)*self.scale,
                                 -1e7,
                                 cx-(i*self.x_axis_gap_val)*self.scale,
                                 (1e7)*self.scale))
-        for j in range(int(self.maxy//(self.y_axis_gap_val))):
+        for j in range(2*int(self.maxy//(self.y_axis_gap_val))):
             self.grid_vert.append((-1e7,
                                 cy+1*(j*self.y_axis_gap_val)*self.scale,
                                 (1e7)*self.scale,
@@ -1371,12 +1514,17 @@ class Mapviewer:
             else:
                 pass
         # ----------------------------------------绘制----------------------------------------
-        shift = self.imgsize*self.scale//2
+        
         for k in sorted(self.tk_dict.keys()):
+            if self.scale>=0.75:
+                shift = self.tk_dict[k].width()//2
+            else:
+                shift = self.imgsize*self.scale//2
             if k == self.selected_node_id_int:
                 self.canvas.create_image(self.img_dict[k].x-shift, self.img_dict[k].y-shift, image=self.tk_dict[k], anchor='nw', tags=('img', k, 'selected'))
             else:
                 self.canvas.create_image(self.img_dict[k].x-shift, self.img_dict[k].y-shift, image=self.tk_dict[k], anchor='nw', tags=('img', k))
+        shift = self.imgsize*self.scale//2
         if self.show_grid_flag:
             for e in self.grid_vert: 
                 self.canvas.create_line(e[0]-shift, e[1]-shift, e[2]-shift, e[3]-shift, fill='purple', width=self.grid_line_width, tags='coordline')
@@ -1390,9 +1538,12 @@ class Mapviewer:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++ 初始化方法 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
     def init_binding(self):
-        self.canvas.bind('<ButtonPress-1>', self.start_drag)
-        self.canvas.bind('<ButtonRelease-1>', self.stop_drag)
-        self.canvas.bind('<B1-Motion>', self.drag)
+        self.canvas.bind('<ButtonPress-1>', self.start_drag_item)
+        self.canvas.bind('<ButtonRelease-1>', self.stop_drag_item)
+        self.canvas.bind('<B1-Motion>', self.drag_item)
+        self.canvas.bind('<ButtonPress-2>', self.start_drag_canvas)
+        self.canvas.bind('<ButtonRelease-2>', self.stop_drag_canvas)
+        self.canvas.bind('<B2-Motion>', self.drag_canvas)
         self.canvas.bind('<ButtonPress-3>', self.start_rotate)
         self.canvas.bind('<ButtonRelease-3>', self.stop_rotate)
         self.canvas.bind('<B3-Motion>', self.rotate)
@@ -1470,13 +1621,15 @@ class Mapviewer:
         self.selected_node_id_lbl.grid(sticky='', pady=2)
         self.selected_node_pos_lbl.grid(sticky='', pady=2)
 
+        self.mil2pix_frame = tk.Frame(self.control_frame)
+        self.mil2pix_frame.grid(pady=2)
         self.mil2pix = tk.DoubleVar()
         self.mil2pix.set(0.40625)
-        self.mil2pix_lbl = tk.Label(self.control_frame, text='毫米/像素')
-        self.mil2pix_ent = tk.Entry(self.control_frame, textvariable=self.mil2pix)
+        self.mil2pix_lbl = tk.Label(self.mil2pix_frame, text='毫米/像素  ')
+        self.mil2pix_ent = tk.Entry(self.mil2pix_frame, textvariable=self.mil2pix, width=12)
         self.mil2pix_btn = tk.Button(self.control_frame, text='设定新的毫米/像素', command=self.mil2pix_btn_callback)
-        self.mil2pix_lbl.grid(sticky='', pady=2)
-        self.mil2pix_ent.grid(sticky='', pady=2)
+        self.mil2pix_lbl.grid(row=0, column=0, sticky='', pady=2)
+        self.mil2pix_ent.grid(row=0, column=1, sticky='', pady=2)
         self.mil2pix_btn.grid(sticky='', pady=2)
 
         self.zoom_scale = tk.StringVar()
@@ -1497,16 +1650,20 @@ class Mapviewer:
         self.x_axis_gap.set(1000)
         self.y_axis_gap.set(1000)
         self.show_grid_str.set('已打开网格显示')
-        self.x_axis_gap_lbl = tk.Label(self.control_frame, text='x轴网格间距(mm)')
-        self.x_axis_gap_ent = tk.Entry(self.control_frame, textvariable=self.x_axis_gap)
-        self.y_axis_gap_lbl = tk.Label(self.control_frame, text='y轴网格间距(mm)')
-        self.y_axis_gap_ent = tk.Entry(self.control_frame, textvariable=self.y_axis_gap)
+        self.x_axis_gap_frm = tk.Frame(self.control_frame)
+        self.x_axis_gap_frm.grid()
+        self.y_axis_gap_frm = tk.Frame(self.control_frame)
+        self.y_axis_gap_frm.grid()
+        self.x_axis_gap_lbl = tk.Label(self.x_axis_gap_frm, text='x轴网格间距(mm)  ')
+        self.x_axis_gap_ent = tk.Entry(self.x_axis_gap_frm, textvariable=self.x_axis_gap, width=8)
+        self.y_axis_gap_lbl = tk.Label(self.y_axis_gap_frm, text='y轴网格间距(mm)  ')
+        self.y_axis_gap_ent = tk.Entry(self.y_axis_gap_frm, textvariable=self.y_axis_gap, width=8)
         self.grid_gap_btn = tk.Button(self.control_frame, text='设定新网格间距', command=self.grid_gap_btn_callback)
         self.grid_show_btn = tk.Button(self.control_frame, textvariable=self.show_grid_str, command=self.grid_show_btn_callback)
-        self.x_axis_gap_lbl.grid(sticky='', pady=2)
-        self.x_axis_gap_ent.grid(sticky='', pady=2)
-        self.y_axis_gap_lbl.grid(sticky='', pady=2)
-        self.y_axis_gap_ent.grid(sticky='', pady=2)
+        self.x_axis_gap_lbl.grid(row=0, column=0, sticky='', pady=2)
+        self.x_axis_gap_ent.grid(row=0, column=1, sticky='', pady=2)
+        self.y_axis_gap_lbl.grid(row=0, column=0, sticky='', pady=2)
+        self.y_axis_gap_ent.grid(row=0, column=1, sticky='', pady=2)
         self.grid_gap_btn.grid(sticky='', pady=2)
         self.grid_show_btn.grid(sticky='', pady=2)
 
@@ -1565,6 +1722,7 @@ class Mapviewer:
         self.edit_abort_btn = tk.Button(self.edit_frame, text='放弃修改', command=self.edit_abort_callback)
         self.edit_commit_btn.grid(row=0, column=0, pady=2, padx=2)
         self.edit_abort_btn.grid(row=0, column=1, pady=2, padx=2)
+
         self.donothing_4_1 = tk.Frame(self.control_frame, height=8, width=120)
         self.donothing_4_1.grid()
         self.donothing_4_2 = tk.Frame(self.control_frame, bg='#555', height=1, width=220)
@@ -1576,6 +1734,22 @@ class Mapviewer:
         self.edit_delete_var.set('删除选中图像：暂无选中ID')
         self.edit_delete_btn = tk.Button(self.control_frame, textvariable=self.edit_delete_var, command=self.edit_delete_callback, state=tk.DISABLED)
         self.edit_delete_btn.grid(pady=2)
+
+        self.donothing_5_1 = tk.Frame(self.control_frame, height=16, width=120)
+        self.donothing_5_1.grid()
+        self.donothing_5_2 = tk.Frame(self.control_frame, bg='#555', height=1, width=220)
+        self.donothing_5_2.grid()
+        self.donothing_5_3 = tk.Frame(self.control_frame, height=16, width=120)
+        self.donothing_5_3.grid()
+
+        self.progress_frm = tk.Frame(self.control_frame)
+        self.progress_frm.grid(pady=2)
+        self.progress = ttk.Progressbar(self.progress_frm, orient='horizontal', length=120, mode='determinate')
+        self.progress_msg = tk.StringVar()
+        self.progress_msg.set('  载入完成')
+        self.progress_lbl = tk.Label(self.progress_frm, textvariable=self.progress_msg)
+        self.progress_lbl.grid(row=0, column=1, pady=2)
+        self.progress.grid(row=0, column=0, pady=2)
 
         self.grid_width_val = tk.DoubleVar()
         self.coord_width_val = tk.DoubleVar()
@@ -1594,7 +1768,6 @@ class Mapviewer:
         self.sample_rate_val.set(1.0)
        
         self.global_view_toplevel = None
-        self.progress_msg = tk.StringVar()
 
         self.root.resizable(width=False, height=False)
         self.root.configure(menu=self.menubar)
