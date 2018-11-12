@@ -167,7 +167,6 @@ class Mapviewer:
         try:
             xc, yc = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
             dx, dy = xc-self.current_coords[0], yc-self.current_coords[1]
-            self.total_map_shift = self.total_map_shift[0]-dx/self.scale, self.total_map_shift[1]-dy/self.scale
             curr_img_id = self.canvas.find_withtag('current')
             self.current_coords = xc, yc
             if self.dragged_item != tk.ALL and self.edit_mod_flag==True and self.img_dict[self.dragged_item].fixed==False:
@@ -183,19 +182,6 @@ class Mapviewer:
                 self.img_dict[self.dragged_item].x += dx
                 self.img_dict[self.dragged_item].y += dy
                 self.modify_img_dict[self.dragged_item] = (self.modify_img_dict[self.dragged_item][0]+dx/self.scale, self.modify_img_dict[self.dragged_item][1]+dy/self.scale)
-            # else:
-            #     self.canvas.delete('baseline')
-            #     self.canvas.move(tk.ALL, dx, dy)
-            #     self.canvas.create_line(640,0,640,960, fill='blue', tags='baseline')
-            #     self.canvas.create_line(0,480,1280,480, fill='blue', tags='baseline')
-            #     for k in self.img_dict.keys():
-            #         self.img_dict[k].x += dx
-            #         self.img_dict[k].y += dy
-            #     for i in range(len(self.grid_vert)):
-            #         self.grid_vert[i] = (self.grid_vert[i][0], self.grid_vert[i][1]+dy, self.grid_vert[i][2], self.grid_vert[i][3]+dy)
-            #     for j in range(len(self.grid_horz)):
-            #         self.grid_horz[j] = (self.grid_horz[j][0]+dx, self.grid_horz[j][1], self.grid_horz[j][2]+dx, self.grid_horz[j][3])
-            #     self.coord_central = (self.coord_central[0]+dx, self.coord_central[1]+dy)
         except Exception as e:
             print 'drag '+str(e)
 
@@ -419,6 +405,51 @@ class Mapviewer:
             for e in self.edit_history_listbox.get(0, tk.END):
                 self.img_dict[int(e.split('  ')[0].split(':')[1])].leave_boundingbox()
             self.img_dict[pid].enter_boundingbox(1)
+            self.calc_visible(False)
+
+    def start_ctrl_modify_item(self, event):
+        if self.scale>0.2 and self.edit_mod_flag==False:
+            self.canvas.bind_all('<MouseWheel>', self.do_nothing)
+            self.edit_mod_flag = True
+            self.edit_mod_var.set('退出编辑模式')
+            result = self.canvas.gettags('current')
+            if len(result)>2:
+                self.dragged_item = int(result[1])
+                self.current_coords = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+            else:
+                self.dragged_item = tk.ALL
+            
+    def ctrl_modify_item(self, event):
+        try:
+            xc, yc = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+            dx, dy = xc-self.current_coords[0], yc-self.current_coords[1]
+            curr_img_id = self.canvas.find_withtag('current')
+            self.current_coords = xc, yc
+            if self.dragged_item != tk.ALL and self.edit_mod_flag==True and self.img_dict[self.dragged_item].fixed==False:
+                # 拖拽编辑模式
+                self.canvas.tag_raise('current')
+                self.canvas.tag_raise('coordline')
+                self.canvas.tag_raise('baseline')
+                if self.dragged_item not in self.modify_img_dict.keys():
+                    self.modify_img_dict[self.dragged_item] = (0,0)
+                self.dragging_img_set.add(self.dragged_item)
+                self.canvas.move(curr_img_id, dx, dy)
+                self.img_dict[self.dragged_item].enter_boundingbox(0)
+                self.img_dict[self.dragged_item].x += dx
+                self.img_dict[self.dragged_item].y += dy
+                self.modify_img_dict[self.dragged_item] = (self.modify_img_dict[self.dragged_item][0]+dx/self.scale, self.modify_img_dict[self.dragged_item][1]+dy/self.scale)
+        except Exception as e:
+            print e
+
+    def stop_ctrl_modify_item(self, event):
+        if self.scale>0.2 and self.edit_mod_flag==True:
+            self.edit_mod_flag = False
+            self.edit_mod_var.set('进入编辑模式')
+            self.edit_history_listbox.delete(0,tk.END)
+            for k in self.modify_img_dict.keys():
+                self.edit_history_listbox.insert(tk.END, 'id:%s  x:%s  y:%s  θ:%s'%(k, round(self.modify_img_dict[k][0],1), -1*round(self.modify_img_dict[k][1],1), self.img_dict[k].rot))
+            self.dragging_img_set = set()
+            self.canvas.bind_all('<MouseWheel>', self.zoomer)
             self.calc_visible(False)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++ 界面回调方法 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1552,6 +1583,9 @@ class Mapviewer:
         self.canvas.bind('<Button-5>', self.zoomer_dw)
         self.canvas.bind('<Motion>', self.mouse_pos_callback)
         self.canvas.bind('<Double-Button-1>', self.mouse_db_click_callback)
+        self.canvas.bind('<Control-ButtonPress-1>', self.start_ctrl_modify_item)
+        self.canvas.bind('<Control-B1-Motion>', self.ctrl_modify_item)
+        self.canvas.bind('<Control-ButtonRelease-1>', self.stop_ctrl_modify_item)
         self.edit_history_listbox.bind('<Button-1>', self.edit_single_click_callback)
 
     def init_mainpage(self):
