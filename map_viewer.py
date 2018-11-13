@@ -452,6 +452,54 @@ class Mapviewer:
             self.canvas.bind_all('<MouseWheel>', self.zoomer)
             self.calc_visible(False)
 
+    def start_ctrl_rotate_item(self, event):
+        if not self.edit_mod_flag and self.selected_node_id_int!=None:
+            self.edit_mod_flag = True
+            self.edit_mod_var.set('退出编辑模式')
+            self.current_angle = self.canvas.canvasy(event.x)
+            self.calc_visible(False)
+
+    def ctrl_rotate_item(self, event):
+        if self.edit_mod_flag and self.selected_node_id_int!=None:
+            ca = self.canvas.canvasx(event.x)
+            self.current_rotate = ca - self.current_angle
+            try:
+                self.canvas.delete('selected')
+                self.rotate_img = self.img_dict[self.selected_node_id_int].image.convert('RGBA')
+                self.rotate_arr = np.array(self.rotate_img)
+                self.rotate_arr[:,:,3] = (self.rotate_arr[:,:,0]+self.rotate_arr[:,:,1]+self.rotate_arr[:,:,2]!=0)*self.rotate_arr[:,:,3]
+                self.rotate_img = Image.fromarray(self.rotate_arr.astype('uint8')).resize((int(self.imgsize*self.scale), int(self.imgsize*self.scale))).rotate(self.img_dict[self.selected_node_id_int].theta+self.current_rotate*0.1+self.img_dict[self.selected_node_id_int].rot, expand=True)
+                self.rotaet_tkimg = ImageTk.PhotoImage(self.rotate_img)
+                print self.rotate_img.size[0]
+                print self.imgsize*self.scale
+                shift = (self.rotate_img.size[0])/2.
+                self.canvas.create_image((self.img_dict[self.selected_node_id_int].x-shift, self.img_dict[self.selected_node_id_int].y-shift), image=self.rotaet_tkimg, anchor='nw', tags=('img', self.selected_node_id_int, 'selected'))
+                self.edit_rotate_val.set('图像：%s，旋转角度：%s°'%(self.selected_node_id_int, round(self.img_dict[self.selected_node_id_int].rot+self.current_rotate*0.1, 2)))
+                if self.selected_node_id_int not in self.modify_img_dict.keys():
+                    self.modify_img_dict[self.selected_node_id_int] = (0,0)
+                self.edit_history_listbox.delete(0,tk.END)
+                for k in self.modify_img_dict.keys():
+                    self.edit_history_listbox.insert(tk.END, 'id:%s  x:%s  y:%s  θ:%s'%(k, round(self.modify_img_dict[k][0],1), -1*round(self.modify_img_dict[k][1],1), self.img_dict[k].rot))
+            except Exception as e:
+                traceback.print_exc()
+                print self.canvas.gettags('current')
+
+    def stop_ctrl_rotate_item(self, event):
+        if self.edit_mod_flag and self.selected_node_id_int!=None:
+            self.edit_mod_flag = False
+            try:
+                self.img_dict[self.selected_node_id_int].rot += self.current_rotate*0.1
+                self.calc_visible(False)
+                self.current_rotate = 0.
+                self.edit_mod_var.set('进入编辑模式')
+                if self.selected_node_id_int not in self.modify_img_dict.keys():
+                    self.modify_img_dict[self.selected_node_id_int] = (0,0)
+                self.edit_history_listbox.delete(0,tk.END)
+                for k in self.modify_img_dict.keys():
+                    self.edit_history_listbox.insert(tk.END, 'id:%s  x:%s  y:%s  θ:%s'%(k, round(self.modify_img_dict[k][0],1), -1*round(self.modify_img_dict[k][1],1), self.img_dict[k].rot))
+            except Exception as e:
+                print 'stop_rotate '+str(e)
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++ 界面回调方法 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
     def mouse_pos_callback(self, event):
@@ -480,6 +528,7 @@ class Mapviewer:
                 self.img_dict[curr_img_id].enter_boundingbox(1)
                 self.calc_visible(False)
                 self.canvas.tag_raise('current')
+                self.canvas.tag_raise('selected')
                 self.canvas.tag_raise('coordline')
                 self.canvas.tag_raise('baseline')
             else:
@@ -493,6 +542,7 @@ class Mapviewer:
                 self.edit_rotate_val.set('当前无旋转图像')
                 self.edit_delete_flag = False
                 self.edit_delete_btn.config(state=tk.DISABLED)
+                self.calc_visible(False)
         except Exception as e:
             print 'mouse_db_click_callback '+str(e)
 
@@ -599,10 +649,12 @@ class Mapviewer:
             self.img_dict[idx].x -= dx*self.scale
             self.img_dict[idx].y -= dy*self.scale
             self.img_dict[idx].rot -= dtheta
-        self.calc_visible(False)
         self.edit_history_listbox.delete(0,tk.END)
+        for item in self.dragging_img_set:
+            self.img_dict[item].leave_boundingbox()
         self.dragging_img_set = set()
         self.modify_img_dict = {}
+        self.calc_visible(False)
 
     def edit_delete_callback(self):
         if self.using_db:
@@ -1583,9 +1635,14 @@ class Mapviewer:
         self.canvas.bind('<Button-5>', self.zoomer_dw)
         self.canvas.bind('<Motion>', self.mouse_pos_callback)
         self.canvas.bind('<Double-Button-1>', self.mouse_db_click_callback)
+        # ----------- Ctrl -----------
         self.canvas.bind('<Control-ButtonPress-1>', self.start_ctrl_modify_item)
         self.canvas.bind('<Control-B1-Motion>', self.ctrl_modify_item)
         self.canvas.bind('<Control-ButtonRelease-1>', self.stop_ctrl_modify_item)
+        self.canvas.bind('<Control-ButtonPress-3>', self.start_ctrl_rotate_item)
+        self.canvas.bind('<Control-B3-Motion>', self.ctrl_rotate_item)
+        self.canvas.bind('<Control-ButtonRelease-3>', self.stop_ctrl_rotate_item)
+        # ----------- Other ----------
         self.edit_history_listbox.bind('<Button-1>', self.edit_single_click_callback)
 
     def init_mainpage(self):
