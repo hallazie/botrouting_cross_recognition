@@ -667,6 +667,7 @@ class Mapviewer:
                     conn.commit()
                     conn.close()
                     tkMessageBox.showinfo('提示', '删除成功')
+                    self.calc_visible(False)
                 except Exception as e:
                     print 'edit_delete_callback '+str(e)
                     tkMessageBox.showerror('错误', '删除失败')
@@ -1067,7 +1068,7 @@ class Mapviewer:
                     if idx in self.img_dict.keys():
                         continue
                     imgobj = Imgobj(idx=idx,
-                                    image=img,
+                                    image=img.rotate(270),
                                     x=curx,
                                     y=-1*cury,
                                     theta=theta)
@@ -1512,6 +1513,7 @@ class Mapviewer:
     def grid_load(self):
         self.grid_horz = []
         self.grid_vert = []
+        self.coord_central = 160*self.mil2pix_ratio*self.scale, 160*self.mil2pix_ratio*self.scale
         cx, cy = self.coord_central
         for i in range(2*int(self.maxx//(self.x_axis_gap_val))):
             self.grid_horz.append((cx+(i*self.x_axis_gap_val)*self.scale,
@@ -1597,7 +1599,6 @@ class Mapviewer:
             else:
                 pass
         # ----------------------------------------绘制----------------------------------------
-        
         for k in sorted(self.tk_dict.keys()):
             if self.scale>=0.75:
                 shift = self.tk_dict[k].width()//2
