@@ -1,20 +1,19 @@
-#coding:utf-8
+# coding:utf-8
 
 import os
 import sys
 import logging
 import traceback
 import sqlite3
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap, QImage, QTransform, QBrush, QPen
-from PyQt5.QtWidgets import QWidget, QApplication, QMainWindow, QGraphicsView, QGraphicsScene, \
-    QGraphicsItem, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QLineEdit, QFrame, QStatusBar, \
-    QAction, QListWidget, QListWidgetItem, QGraphicsLineItem, QErrorMessage, QProgressBar, QFileDialog, QDialog
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QPixmap, QImage, QTransform, QBrush, QPen, QColor, QDoubleValidator
+from PyQt5.QtWidgets import QWidget, QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsItem,  QHBoxLayout, QVBoxLayout, \
+    QGraphicsPixmapItem, QPushButton, QLabel, QLineEdit, QFrame, QStatusBar, QAction, QListWidget, QListWidgetItem, QGraphicsLineItem, QErrorMessage, \
+    QProgressBar, QFileDialog, QDialog, QMessageBox
 from PyQt5.QtOpenGL import QGLWidget
 
 logging.basicConfig(level=logging.DEBUG)
 
-M2PRATIO = 0.40625
 
 class Image(QGraphicsItem):
     def __init__(self, idx, x, y, t):
@@ -23,6 +22,191 @@ class Image(QGraphicsItem):
         self.cx = x
         self.cy = y
         self.ct = t
+
+
+class LineSeparator(QFrame):
+    def __init__(self):
+        QFrame.__init__(self)
+        self.setFrameShape(QFrame.HLine)
+        self.setFrameShadow(QFrame.Sunken)
+
+
+class ThreadLoadPixPath(QThread):
+    signal = pyqtSignal('PyQt_PyObject')
+    def __init__(self, main_widget):
+        QThread.__init__(self, main_widget)
+        self.main_widget = main_widget
+        self.isrunning = True
+
+    def run(self):
+        try:
+            self.main_widget.canvas_view.setInteractive(False)
+            self.signal.emit('start:0')
+            print('disabling canvas view interaction due to data loading...')
+            while self.isrunning:
+                try:
+                    # path = 'D:/Data/sz/sz_calibs/'
+                    path = 'D:/Data/jx/231/part2/calib_bak/'
+                    for _, _, fs in os.walk(path):
+                        total = len(fs)
+                        self.signal.emit('min:%s' % 0)
+                        self.signal.emit('max:%s' % len(fs))
+                        current = 0
+                        for f in fs:
+                            file = path + f
+                            idx = int(f[:-4].split('_')[0])
+                            x = float(f[:-4].split('_')[1])
+                            y = -1 * float(f[:-4].split('_')[2])
+                            t = float(f[:-4].split('_')[3]) + 90
+                            if idx not in self.main_widget.canvas_scene.pix_dict.keys():
+                                pix = QPixmap(file).scaled(130, 130, Qt.KeepAspectRatio)
+                                img = QGraphicsPixmapItem(pix)
+                                img.setTransformOriginPoint(pix.width() // 2, pix.height() // 2)
+                                img.setRotation(t)
+                                img.setPos(x - pix.width() // 2, y - pix.height() // 2)
+                                img.setFlag(QGraphicsItem.ItemIsMovable)
+                                img.cx = x
+                                img.cy = y
+                                img.ct = t
+                                img.ox = x
+                                img.oy = y
+                                img.ot = t
+                                img.idx = idx
+                                self.main_widget.canvas_scene.pix_dict[idx] = img
+                                self.main_widget.canvas_scene.maxx = max(x, self.main_widget.canvas_scene.maxx)
+                                self.main_widget.canvas_scene.maxy = max(abs(y), self.main_widget.canvas_scene.maxy)
+                                self.main_widget.canvas_scene.minx = min(x, self.main_widget.canvas_scene.minx)
+                                self.main_widget.canvas_scene.miny = min(abs(y), self.main_widget.canvas_scene.miny)
+                            current += 1
+                            self.signal.emit('current:%s' % current)
+                        break
+                except Exception as e:
+                    traceback.print_exc()
+                self.main_widget.canvas_view.setInteractive(True)
+                print('enabling canvas view interaction...')
+                self.signal.emit('stop:0')
+                self.isrunning = False
+        except Exception as e:
+            traceback.print_exc()
+
+# class ThreadLoadPixDB(QThread):
+#     pass
+
+class MvAbout(QDialog):
+    def __init__(self):
+        QDialog.__init__(self)
+        self.setGeometry(320, 120, 480, 480)
+        self.box = QVBoxLayout()
+        self.lbl001 = QLabel('Quicktron')
+        self.lbl002 = QLabel('Texture Localization')
+        self.box.addWidget(self.lbl001)
+        self.box.addWidget(self.lbl002)
+        self.setLayout(self.box)
+
+
+class MvPreference(QDialog):
+    def __init__(self, parent):
+        QDialog.__init__(self, parent)
+        self.main_widget = parent
+        self.socket_path = ''
+
+        self.setGeometry(320, 120, 480, 480)
+        self.setWindowTitle('Preference')
+        self.box_root = QVBoxLayout()
+
+        self.box_dis_ttl = QHBoxLayout()
+        self.lin_dis_ttl = LineSeparator()
+        self.lbl_dis_ttl = QLabel('显示')
+        self.box_dis_grid_width = QHBoxLayout()
+        self.lbl_dis_grid_width = QLabel('网格线宽度')
+        self.ent_dis_grid_width = QLineEdit(str(self.main_widget.canvas_scene.x_axis_gap))
+        self.ent_dis_grid_width.setValidator(QDoubleValidator())
+        self.ent_dis_grid_width.setFixedWidth(120)
+        self.box_dis_coord_width = QHBoxLayout()
+        self.lbl_dis_coord_width = QLabel('坐标线宽度')
+        self.ent_dis_coord_width = QLineEdit('1000')
+        self.ent_dis_coord_width.setValidator(QDoubleValidator())
+        self.ent_dis_coord_width.setFixedWidth(120)
+        self.box_dis_rotate = QHBoxLayout()
+        self.lbl_dis_rotate = QLabel('旋转角度  ')
+        self.ent_dis_rotate = QLineEdit(str(self.main_widget.canvas_scene.pix_rotate))
+        self.ent_dis_rotate.setValidator(QDoubleValidator())
+        self.ent_dis_rotate.setFixedWidth(120)
+
+        self.box_sok_ttl = QHBoxLayout()
+        self.lin_sok_ttl = LineSeparator()
+        self.lbl_sok_ttl = QLabel('图像采集')
+        self.box_sok_path = QHBoxLayout()
+        self.btn_sok_path = QPushButton('图像采集保存路径')
+        self.btn_sok_path.clicked.connect(self.handle_socket_path)
+        self.btn_sok_path.setFixedWidth(120)
+        self.lbl_sok_path = QLabel(self.main_widget.socket_save_path)
+
+        self.box_commit = QHBoxLayout()
+        self.btn_commit = QPushButton('确认')
+        self.btn_commit.clicked.connect(self.handle_pref_commit)
+        self.btn_abort = QPushButton('放弃')
+        self.btn_abort.clicked.connect(self.handle_pref_abort)
+        self.btn_commit.setFixedWidth(80)
+        self.btn_abort.setFixedWidth(80)
+
+        self.lbl_dis_ttl.setFixedWidth(26)
+        self.box_dis_ttl.addWidget(self.lbl_dis_ttl)
+        self.box_dis_ttl.addWidget(self.lin_dis_ttl)
+        self.box_root.addLayout(self.box_dis_ttl)
+        self.box_dis_grid_width.addWidget(self.lbl_dis_grid_width)
+        self.box_dis_grid_width.addWidget(self.ent_dis_grid_width)
+        self.box_dis_grid_width.addStretch(1)
+        self.box_root.addLayout(self.box_dis_grid_width)
+        self.box_dis_coord_width.addWidget(self.lbl_dis_coord_width)
+        self.box_dis_coord_width.addWidget(self.ent_dis_coord_width)
+        self.box_dis_coord_width.addStretch(1)
+        self.box_root.addLayout(self.box_dis_coord_width)
+        self.box_dis_rotate.addWidget(self.lbl_dis_rotate)
+        self.box_dis_rotate.addWidget(self.ent_dis_rotate)
+        self.box_dis_rotate.addStretch(1)
+        self.box_root.addLayout(self.box_dis_rotate)
+        self.box_root.addSpacing(10)
+        self.lbl_sok_ttl.setFixedWidth(48)
+        self.box_sok_ttl.addWidget(self.lbl_sok_ttl)
+        self.box_sok_ttl.addWidget(self.lin_sok_ttl)
+        self.box_root.addLayout(self.box_sok_ttl)
+        self.box_sok_path.addWidget(self.btn_sok_path)
+        self.box_sok_path.addWidget(self.lbl_sok_path)
+        self.box_root.addLayout(self.box_sok_path)
+        self.box_root.addSpacing(10)
+        self.box_root.addStretch(1)
+        self.box_commit.addStretch(1)
+        self.box_commit.addWidget(self.btn_commit)
+        self.box_commit.addWidget(self.btn_abort)
+        self.box_root.addLayout(self.box_commit)
+        self.setLayout(self.box_root)
+
+    def handle_socket_path(self):
+        self.socket_path = os.path.normpath(QFileDialog.getExistingDirectory(self)).replace('\\', '/')
+        self.lbl_sok_path.setText(self.socket_path)
+
+    def handle_pref_commit(self):
+        try:
+            self.main_widget.canvas_scene.pix_rotate = float(self.ent_dis_rotate.text())
+            self.main_widget.canvas_scene.x_axis_gap = float(self.ent_dis_grid_width.text())
+            self.main_widget.canvas_scene.y_axis_gap = float(self.ent_dis_grid_width.text())
+            self.main_widget.socket_save_path = self.socket_path
+            self.main_widget.canvas_scene.reload_pixmaps()
+            self.close()
+        except Exception as e:
+            traceback.print_exc()
+
+    def handle_pref_abort(self):
+        try:
+            reply = QMessageBox.question(self, '提示', '确认退出？参数将不被修改', QMessageBox.Yes, QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self.close()
+            else:
+                pass
+        except Exception as e:
+            traceback.print_exc()
+
 
 class MvView(QGraphicsView):
     def __init__(self, scene, parent):
@@ -38,26 +222,14 @@ class MvView(QGraphicsView):
             if QWheelEvent.angleDelta().y() > 0:
                 if self.scene.scale < 16:
                     self.scene.scale *= self.scene.scale_factor
-                    print('zoom bigger: %f'%self.scene.scale)
+                    print('zoom bigger: %f' % self.scene.scale)
             else:
                 if self.scene.scale > 0.0625:
                     self.scene.scale /= self.scene.scale_factor
-                    print('zoom small: %f'%self.scene.scale)
+                    print('zoom small: %f' % self.scene.scale)
             self.setTransform(QTransform.fromScale(self.scene.scale, self.scene.scale), False)
         except Exception as e:
             traceback.print_exc()
-
-
-class MvAbout(QDialog):
-    def __init__(self):
-        QDialog.__init__(self)
-        self.setGeometry(320, 120, 480, 480)
-        self.box = QVBoxLayout()
-        self.lbl001 = QLabel('Quicktron')
-        self.lbl002 = QLabel('Texture Localization')
-        self.setLayout(self.box)
-        self.box.addWidget(self.lbl001)
-        self.box.addWidget(self.lbl002)
 
 
 class MvScene(QGraphicsScene):
@@ -83,6 +255,7 @@ class MvScene(QGraphicsScene):
         self.maxy = 0
         self.minx = 1e10
         self.miny = 1e10
+        self.pix_rotate = 0.
 
         self.scale = 1.0
         self.scale_factor = 1.1
@@ -119,7 +292,8 @@ class MvScene(QGraphicsScene):
         try:
             self.mouse_x = QGraphicsSceneMouseEvent.scenePos().x()
             self.mouse_y = QGraphicsSceneMouseEvent.scenePos().y()
-            self.main_widget.val_mouse_pos = '鼠标位置：%s, %s' % (round(self.mouse_x - self.total_shift_x, 2), -1 * round(self.mouse_y - self.total_shift_y, 2))
+            self.main_widget.val_mouse_pos = '鼠标位置：%s, %s' % (
+            round(self.mouse_x - self.total_shift_x, 2), -1 * round(self.mouse_y - self.total_shift_y, 2))
             self.main_widget.lbl_mouse_pos.setText(self.main_widget.val_mouse_pos)
             delta_x = QGraphicsSceneMouseEvent.scenePos().x() - self.prev_x
             delta_y = QGraphicsSceneMouseEvent.scenePos().y() - self.prev_y
@@ -127,7 +301,7 @@ class MvScene(QGraphicsScene):
             self.prev_y = QGraphicsSceneMouseEvent.scenePos().y()
 
             if self.drag_canvas_flag == True:
-            # dragging the hole canvas, need to adjust the total shift, too.
+                # dragging the hole canvas, need to adjust the total shift, too.
                 for k in self.pix_dict:
                     self.pix_dict[k].moveBy(delta_x, delta_y)
                 for i in range(len(self.grid_list)):
@@ -141,7 +315,7 @@ class MvScene(QGraphicsScene):
                 self.pix_dict[self.ctrl_selected_idx].moveBy(delta_x, delta_y)
 
             elif self.rotate_item_flag == True and self.ctrl_selected_idx != None:
-            # totation
+                # totation
                 self.pix_dict[self.ctrl_selected_idx].ct += delta_x / 5.
                 self.pix_dict[self.ctrl_selected_idx].setRotation(self.pix_dict[self.ctrl_selected_idx].ct)
 
@@ -166,7 +340,8 @@ class MvScene(QGraphicsScene):
             self.dclick_selected_item = self.itemAt(QGraphicsSceneMouseEvent.scenePos(), QTransform())
             if self.dclick_selected_item != None:
                 self.main_widget.val_selected_node_id = '选中节点ID：%s' % self.dclick_selected_item.idx
-                self.main_widget.val_selected_node_pos = '选中节点位置：%s, %s' % (round(self.dclick_selected_item.cx, 2), -1*round(self.dclick_selected_item.cy, 2))
+                self.main_widget.val_selected_node_pos = '选中节点位置：%s, %s' % (
+                round(self.dclick_selected_item.cx, 2), -1 * round(self.dclick_selected_item.cy, 2))
                 self.main_widget.val_selected_node_angle = '选中节点角度：%s' % self.dclick_selected_item.ct
                 self.main_widget.lbl_selected_node_id.setText(self.main_widget.val_selected_node_id)
                 self.main_widget.lbl_selected_node_pos.setText(self.main_widget.val_selected_node_pos)
@@ -184,7 +359,7 @@ class MvScene(QGraphicsScene):
     def load_all_pixmaps_from_db(self, path):
         if not os.path.exists(path):
             err = QErrorMessage()
-            err.showMessage('数据库文件"%s"不存在'%path)
+            err.showMessage('数据库文件"%s"不存在' % path)
             err.exec_()
             return
         try:
@@ -204,13 +379,12 @@ class MvScene(QGraphicsScene):
                     y = -1 * data[2]
                     t = data[3]
                     ttt = QImage(data[4], 320, 320, QImage.Format_Grayscale8)
-
-                    pix = QPixmap.fromImage(ttt).scaled(130, 130, Qt.KeepAspectRatio)
+                    pix = QPixmap.fromImage(ttt).scaled(130, 130, Qt.KeepAspectRatio, Qt.FastTransformation)
                     # pix = QPixmap('0.bmp').scaled(130, 130, Qt.KeepAspectRatio)
                     img = self.addPixmap(pix)
-                    img.setTransformOriginPoint(pix.width()//2, pix.height()//2)
-                    img.setRotation(t)
-                    img.setPos(x-pix.width()//2, y-pix.height()//2)
+                    img.setTransformOriginPoint(pix.width() // 2, pix.height() // 2)
+                    img.setRotation(t + self.pix_rotate)
+                    img.setPos(x - pix.width() // 2, y - pix.height() // 2)
                     img.setFlag(QGraphicsItem.ItemIsMovable)
                     img.cx = x
                     img.cy = y
@@ -221,9 +395,9 @@ class MvScene(QGraphicsScene):
                     img.idx = idx
                     self.pix_dict[idx] = img
                     self.maxx = max(x, self.maxx)
-                    self.maxy = max(y, self.maxy)
+                    self.maxy = max(abs(y), self.maxy)
                     self.minx = min(x, self.minx)
-                    self.miny = min(y, self.miny)
+                    self.miny = min(abs(y), self.miny)
                 except Exception as e:
                     traceback.print_exc()
                     break
@@ -234,7 +408,7 @@ class MvScene(QGraphicsScene):
             err.exec_()
 
     def load_all_pixmaps_from_path(self):
-        path = 'D:/Data/jx/231/part2/calib_0/'
+        # path = 'D:/Data/jx/231/part2/calib_0/'
         path = 'D:/Data/sz/sz_calibs/'
         for _, _, fs in os.walk(path):
             for f in fs:
@@ -245,10 +419,10 @@ class MvScene(QGraphicsScene):
                 t = float(f[:-4].split('_')[3]) + 90
                 if idx not in self.pix_dict.keys():
                     pix = QPixmap(file).scaled(130, 130, Qt.KeepAspectRatio)
-                    img = self.addPixmap(pix)
-                    img.setTransformOriginPoint(pix.width()//2, pix.height()//2)
+                    # img = self.addPixmap(pix)
+                    img.setTransformOriginPoint(pix.width() // 2, pix.height() // 2)
                     img.setRotation(t)
-                    img.setPos(x-pix.width()//2, y-pix.height()//2)
+                    img.setPos(x - pix.width() // 2, y - pix.height() // 2)
                     img.setFlag(QGraphicsItem.ItemIsMovable)
                     img.cx = x
                     img.cy = y
@@ -264,18 +438,18 @@ class MvScene(QGraphicsScene):
                     self.miny = min(abs(y), self.miny)
 
     def load_grid(self):
-        print('%s,%s->%s,%s' % (self.minx//1000, self.miny//1000, self.maxx//1000, self.maxy//1000))
+        print('%s,%s->%s,%s' % (self.minx // 1000, self.miny // 1000, self.maxx // 1000, self.maxy // 1000))
         self.grid_list = []
-        grid_pen = QPen(Qt.darkRed)
-        grid_pen.setWidth(3)
-        for i in range(int(self.minx//self.x_axis_gap), int(self.maxx//self.x_axis_gap)+1):
+        grid_pen = QPen(QColor.fromRgb(155, 12, 245))
+        grid_pen.setWidth(1)
+        for i in range(int(self.minx // self.x_axis_gap), int(self.maxx // self.x_axis_gap) + 1):
             self.grid_vert.append((
                 i * self.x_axis_gap * self.scale,
                 -1 * self.miny,
                 i * self.x_axis_gap * self.scale,
                 -1 * self.maxy
             ))
-        for j in range(int(self.miny//self.y_axis_gap), int(self.maxy//self.y_axis_gap)+1):
+        for j in range(int(self.miny // self.y_axis_gap), int(self.maxy // self.y_axis_gap) + 1):
             self.grid_horz.append((
                 self.minx,
                 -1 * j * self.y_axis_gap * self.scale,
@@ -296,16 +470,22 @@ class MvScene(QGraphicsScene):
             self.addItem(line_itm)
             self.grid_list.append(line_itm)
 
-class LineSeparator(QFrame):
-    def __init__(self):
-        QFrame.__init__(self)
-        self.setFrameShape(QFrame.HLine)
-        self.setFrameShadow(QFrame.Sunken)
+    def reload_pixmaps(self):
+        for k in self.pix_dict:
+            self.pix_dict[k].setRotation(self.pix_dict[k].ct + self.pix_rotate)
+
+    def handle_load_pixmaps_finished(self):
+        try:
+            for k in self.pix_dict:
+                self.addItem(self.pix_dict[k])
+        except Exception as e:
+            traceback.print_exc()
 
 
 class MvWidget(QWidget):
-    def __init__(self):
-        QWidget.__init__(self)
+    def __init__(self, parent):
+        QWidget.__init__(self, parent)
+        self.main_window = parent
         self.canvas_scene = MvScene(self)
         self.canvas_view = MvView(self.canvas_scene, self)
         self.control_vbox = QVBoxLayout()
@@ -316,6 +496,7 @@ class MvWidget(QWidget):
         self.selected_node_pos = '-'
         self.selected_node_angle = '-'
         self.m2p_ratio = 0.40625
+        self.socket_save_path = os.path.realpath(os.path.curdir).replace('\\', '/') + '/' + 'socket_data'
 
         self.val_mouse_pos = '鼠标位置：%s' % self.mouse_pos
         self.val_selected_node_id = '选中节点ID：%s' % self.selected_node_id
@@ -422,9 +603,6 @@ class MvWidget(QWidget):
         self.val_current_scale = '缩放系数：%s' % str(round(self.canvas_scene.scale, 5))
         self.lbl_current_scale.setText(self.val_current_scale)
 
-    # def mouseMoveEvent(self, QMouseEvent):
-    #     self.val_mouse_pos = '鼠标位置：%s, %s' % (self.canvas_scene.mouse_x, self.canvas_scene.mouse_y)
-    #     self.lbl_mouse_pos.setText(self.val_mouse_pos)
 
 class MvWindow(QMainWindow):
     def __init__(self):
@@ -432,11 +610,18 @@ class MvWindow(QMainWindow):
         self.initUI()
         self.main_widget.canvas_view.setGeometry(120, 0, self.width(), self.height())
         self.main_widget.canvas_view.setMouseTracking(True)
-        self.main_widget.canvas_scene.load_all_pixmaps_from_path()
+        self.main_widget.canvas_view.setBackgroundBrush(QBrush(QColor.fromRgb(25, 25, 25)))
+        self.load_pixmaps_thread = ThreadLoadPixPath(self.main_widget)
+        self.load_pixmaps_thread.start()
+        self.load_pixmaps_thread.finished.connect(self.main_widget.canvas_scene.handle_load_pixmaps_finished)
+        self.load_pixmaps_thread.signal.connect(self.handle_progress_bar)
         self.main_widget.canvas_scene.load_grid()
 
+        # ------------------ preferent params ------------------
+        self.transformation_mode = Qt.FastTransformation
+
     def initUI(self):
-        self.main_widget = MvWidget()
+        self.main_widget = MvWidget(self)
         self.setCentralWidget(self.main_widget)
 
         self.act_param_config = QAction('参数设置', self)
@@ -503,16 +688,47 @@ class MvWindow(QMainWindow):
         self.menu_about.addAction(self.act_about_version)
         self.menu_about.addAction(self.act_about_help)
         self.status = QStatusBar()
+        self.progress = QProgressBar()
+        self.progress.setFixedWidth(160)
+        self.progress.setFixedHeight(20)
+        self.status_message = QLabel('')
         self.setStatusBar(self.status)
         self.setMenuBar(self.menu)
+        self.status.show()
         self.setWindowTitle('Quicktron Map Viewer')
         self.setGeometry(0, 0, 1080, 780)
         self.show()
 
+    # ------------------------------------- handler function -------------------------------------
+
+    def handle_progress_bar(self, msg):
+        try:
+            k, v = msg.split(':')
+            if k == 'start':
+                self.status.addWidget(self.progress)
+                self.status_message.setText('正在载入...')
+                self.status.addWidget(self.status_message)
+            elif k == 'max':
+                self.progress.setMaximum(int(v))
+            elif k == 'min':
+                self.progress.setMinimum(int(v))
+            elif k == 'current':
+                self.progress.setValue(int(v))
+            elif k == 'stop':
+                self.status.removeWidget(self.progress)
+                self.status.removeWidget(self.status_message)
+        except Exception as e:
+            traceback.print_exc()
+
     # ------------------------------------- menubar function -------------------------------------
 
     def open_param_config(self):
-        pass
+        try:
+            about = MvPreference(self.main_widget)
+            about.show()
+            about.exec_()
+        except Exception as e:
+            traceback.print_exc()
 
     def import_single_img(self):
         pass
@@ -577,8 +793,12 @@ class MvWindow(QMainWindow):
     def about_help(self):
         pass
 
+
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')
-    map = MvWindow()
-    sys.exit(app.exec_())
+    try:
+        app = QApplication(sys.argv)
+        app.setStyle('Fusion')
+        map = MvWindow()
+        sys.exit(app.exec_())
+    except Exception as e:
+        traceback.print_exc()
