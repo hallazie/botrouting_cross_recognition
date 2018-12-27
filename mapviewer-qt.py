@@ -234,7 +234,8 @@ class MvScene(QGraphicsScene):
             err.exec_()
 
     def load_all_pixmaps_from_path(self):
-        path = 'E:/Data/mvxsh/bj_val_calibs/'
+        path = 'D:/Data/jx/231/part2/calib_0/'
+        path = 'D:/Data/sz/sz_calibs/'
         for _, _, fs in os.walk(path):
             for f in fs:
                 file = path + f
@@ -258,55 +259,39 @@ class MvScene(QGraphicsScene):
                     img.idx = idx
                     self.pix_dict[idx] = img
                     self.maxx = max(x, self.maxx)
-                    self.maxy = max(y, self.maxy)
+                    self.maxy = max(abs(y), self.maxy)
                     self.minx = min(x, self.minx)
-                    self.miny = min(y, self.miny)
+                    self.miny = min(abs(y), self.miny)
 
     def load_grid(self):
+        print('%s,%s->%s,%s' % (self.minx//1000, self.miny//1000, self.maxx//1000, self.maxy//1000))
         self.grid_list = []
         grid_pen = QPen(Qt.darkRed)
-        grid_pen.setWidth(5)
-        cx = int((self.maxx + self.minx) / 1000.) * 1000
-        cy = -1 * int((self.maxy + self.miny) / 1000.) * 1000
-        for i in range(-1 * int(self.maxx / self.x_axis_gap), int(self.maxx / self.x_axis_gap)):
-            self.grid_horz.append((
-                cx + (i * self.x_axis_gap) * self.scale,
-                -1e10,
-                cx + (i * self.x_axis_gap) * self.scale,
-                1e10
-            ))
-        for j in range(-1 * int(-1 * self.miny / self.y_axis_gap), int(-1 * self.miny / self.y_axis_gap)):
+        grid_pen.setWidth(3)
+        for i in range(int(self.minx//self.x_axis_gap), int(self.maxx//self.x_axis_gap)+1):
             self.grid_vert.append((
-                -1e10,
-                -1 * cy - (j * self.y_axis_gap) * self.scale,
-                1e10,
-                -1 * cy - (j * self.y_axis_gap) * self.scale
+                i * self.x_axis_gap * self.scale,
+                -1 * self.miny,
+                i * self.x_axis_gap * self.scale,
+                -1 * self.maxy
             ))
-        for i in range(-1 * int(self.maxx / self.x_axis_gap), int(self.maxx / self.x_axis_gap)):
+        for j in range(int(self.miny//self.y_axis_gap), int(self.maxy//self.y_axis_gap)+1):
             self.grid_horz.append((
-                cx - (i * self.x_axis_gap) * self.scale,
-                -1e10,
-                cx - (i * self.x_axis_gap) * self.scale,
-                1e10
+                self.minx,
+                -1 * j * self.y_axis_gap * self.scale,
+                self.maxx,
+                -1 * j * self.y_axis_gap * self.scale
             ))
-        for j in range(-1* int(-1 * self.miny / self.y_axis_gap), int(-1 * self.miny / self.y_axis_gap)):
-            self.grid_vert.append((
-                -1e10,
-                -1 * cy + (j * self.y_axis_gap) * self.scale,
-                1e10,
-                -1 * cy + (j * self.y_axis_gap) * self.scale
-            ))
+
         for e in self.grid_vert:
-            line_itm = QGraphicsLineItem(e[0]+65, e[1], e[2]+65, e[3])
-            line_itm.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-            print('vert:%s,%s,%s,%s'%(e))
+            line_itm = QGraphicsLineItem(e[0], e[1], e[2], e[3])
+            # line_itm.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
             line_itm.setPen(grid_pen)
             self.addItem(line_itm)
             self.grid_list.append(line_itm)
         for e in self.grid_horz:
             line_itm = QGraphicsLineItem(e[0], e[1], e[2], e[3])
-            line_itm.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-            print('horz:%s,%s,%s,%s' % (e))
+            # line_itm.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
             line_itm.setPen(grid_pen)
             self.addItem(line_itm)
             self.grid_list.append(line_itm)
