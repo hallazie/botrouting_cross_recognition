@@ -5,7 +5,10 @@ import sys
 import logging
 import traceback
 import sqlite3
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+import numpy as np
+from PIL import Image as im
+from PIL import  ImageQt as imq
+from PyQt5.QtCore import Qt, QThread, QPointF, QPoint, pyqtSignal
 from PyQt5.QtGui import QPixmap, QImage, QTransform, QBrush, QPen, QColor, QDoubleValidator, QIcon
 from PyQt5.QtWidgets import QWidget, QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsItem,  QHBoxLayout, QVBoxLayout, \
     QGraphicsPixmapItem, QPushButton, QLabel, QLineEdit, QFrame, QStatusBar, QAction, QListWidget, QListWidgetItem, QGraphicsLineItem, QErrorMessage, \
@@ -96,6 +99,7 @@ class ThreadLoadPixPath(QThread):
         except Exception as e:
             traceback.print_exc()
 
+
 class ThreadLoadPixDB(QThread):
     signal = pyqtSignal('PyQt_PyObject')
     def __init__(self, main_widget, path):
@@ -144,7 +148,7 @@ class ThreadLoadPixDB(QThread):
                         y = -1 * data[2]
                         t = data[3]
                         ttt = QImage(data[4], 320, 320, QImage.Format_Grayscale8)
-                        pix = QPixmap.fromImage(ttt)# .scaled(130, 130, Qt.KeepAspectRatio, Qt.FastTransformation)
+                        pix = QPixmap.fromImage(ttt)#.scaled(130, 130, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                         img = QGraphicsPixmapItem(pix)
                         img.setTransformOriginPoint(pix.width() // 2, pix.height() // 2)
                         img.setRotation(t + self.main_widget.canvas_scene.pix_rotate)
@@ -186,6 +190,57 @@ class ThreadLoadPixDB(QThread):
             traceback.print_exc()
 
 
+class ThreadHDGlobalMap(QThread):
+    signal = pyqtSignal('PyQt_PyObject')
+    def __init__(self, main_widget):
+        QThread.__init__(self, main_widget)
+        self.main_widget = main_widget
+        self.isrunning = True
+
+    def run(self):
+        err = QErrorMessage()
+        try:
+            self.signal.emit('start:0')
+            self.signal.emit('min:%s' % 0)
+            self.signal.emit('max:%s' % len(self.main_widget.canvas_scene.pix_dict))
+            current = 0
+            width_max = 10240
+            height_max = 10240
+            canvas_width_param = self.main_widget.canvas_scene.maxx - self.main_widget.canvas_scene.minx + 2000
+            canvas_height_param = self.main_widget.canvas_scene.maxy - self.main_widget.canvas_scene.miny + 2000
+            if canvas_width_param > canvas_height_param:
+                gv_width = width_max
+                zoom_scale = float(width_max) / canvas_width_param
+                gv_height = int(width_max * canvas_height_param / canvas_width_param)
+            else:
+                gv_height = height_max
+                zoom_scale = float(height_max) / canvas_height_param
+                gv_width = int(height_max * canvas_width_param / canvas_height_param)
+            img_scale = max(int(320 * zoom_scale * M2PRATIO), 1)
+            # gv_canvas = np.zeros((gv_width, gv_height))
+            gv_canvas = im.new('L', (gv_width, gv_height))
+            for k in self.main_widget.canvas_scene.pix_dict:
+                itm = self.main_widget.canvas_scene.pix_dict[k]
+                img = imq.fromqpixmap(itm.pixmap()).convert('L').resize((img_scale, img_scale))
+                rot = self.main_widget.canvas_scene.pix_dict[k].ot - self.main_widget.canvas_scene.pix_rotate
+                arr = np.array(img.convert('RGBA'))
+                arr[:, :, 3] = (arr[:, :, 0] + arr[:, :, 1] + arr[:, :, 2] != 0) * arr[:, :, 3]
+                gmi = im.fromarray(arr.astype('uint8')).rotate(rot, expand=True)
+                shift = (gmi.size[0] - img_scale) // 2
+                pos_x = int(gv_width * ((itm.ox - shift) - self.main_widget.canvas_scene.minx + 1000) / canvas_width_param)
+                pos_y = int(gv_height * ((-1 * itm.oy + shift) - self.main_widget.canvas_scene.miny + 1000) / canvas_height_param)
+                gv_canvas.paste(gmi, (pos_x-img_scale//2, gv_height - (pos_y - img_scale//2)), gmi)
+                print('x:%s|%s\ty:%s|%s' % (pos_x, itm.ox, pos_y, itm.oy))
+                print('x:%s\ty:%s\tt:%s' % (pos_x, pos_y, rot))
+                current += 1
+                self.signal.emit('current:%s' % current)
+
+            # gv_image = im.fromarray(gv_canvas.transpose().astype('uint8'))
+            gv_canvas.save(os.path.dirname(os.path.realpath(__file__))+os.path.sep + '/'+'hd_global_viewmap.png')
+            self.signal.emit('stop:0')
+        except Exception as e:
+            traceback.print_exc()
+
 class MvAbout(QDialog):
     def __init__(self):
         QDialog.__init__(self)
@@ -201,11 +256,57 @@ class MvAbout(QDialog):
 class MvGlobalView(QDialog):
     def __init__(self, parent):
         QDialog.__init__(self, parent)
-        self.main_widget = parent
+        try:
+            self.main_widget = parent
+            self.gv_width = 100
+            self.gv_height = 100
+            self.zoom_scale = 0
+            self.gv_canvas = None
+            self.gv_image = None
+            self.gv_pixmap = None
+            self.vbox = QVBoxLayout()
+            self.gv_lbl_image = QLabel()
+            self.gen_global_view()
+            self.gv_lbl_image.setPixmap(self.gv_pixmap)
+            self.vbox.addWidget(self.gv_lbl_image)
+            self.setWindowTitle('global view')
+            self.setGeometry(320, 120, self.gv_width, self.gv_height)
+            self.setLayout(self.vbox)
+            self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint | Qt.WindowSystemMenuHint)
+            self.setFixedSize(self.gv_width, self.gv_height)
+            self.show()
+
+        except Exception as e:
+            traceback.print_exc()
 
     def gen_global_view(self):
-        self.canvas_width = 2048
+        try:
+            width_max = 960
+            height_max = 640
+            canvas_width_param = self.main_widget.canvas_scene.maxx - self.main_widget.canvas_scene.minx + 2000
+            canvas_height_param = self.main_widget.canvas_scene.maxy - self.main_widget.canvas_scene.miny + 2000
+            if canvas_width_param > canvas_height_param:
+                self.gv_width = width_max
+                self.zoom_scale = float(width_max) / canvas_width_param
+                self.gv_height = int(width_max * canvas_width_param / canvas_height_param)
+            else:
+                self.gv_height = height_max
+                self.zoom_scale = float(height_max) / canvas_height_param
+                self.gv_width = int(height_max * canvas_height_param / canvas_width_param)
+            img_scale = max(int(320 * self.zoom_scale * M2PRATIO), 1)
+            self.gv_canvas = np.zeros((self.gv_width, self.gv_height))
+            for k in self.main_widget.canvas_scene.pix_dict:
+                itm = self.main_widget.canvas_scene.pix_dict[k]
+                arr = np.array(imq.fromqpixmap(itm.pixmap()).convert('L').resize((img_scale, img_scale)))
+                pos_x = int(self.gv_width * (itm.ox - self.main_widget.canvas_scene.minx + 1000) / canvas_width_param)
+                pos_y = int(self.gv_height * (itm.oy - self.main_widget.canvas_scene.miny + 1000) / canvas_height_param)
+                self.gv_canvas[pos_x-img_scale//2:pos_x-img_scale//2+img_scale, pos_y-img_scale//2:pos_y-img_scale//2+img_scale] = arr
+            self.gv_image = im.fromarray(self.gv_canvas.astype('uint8'))
+            self.gv_pixmap = imq.toqpixmap(self.gv_image)
+            self.gv_image.save(os.path.dirname(os.path.realpath(__file__))+os.path.sep + '/'+'global_view.png')
 
+        except Exception as e:
+            traceback.print_exc()
 
 class MvSocket(QDialog):
     def __init__(self, parent):
@@ -319,8 +420,8 @@ class MvPreference(QDialog):
 class MvView(QGraphicsView):
     def __init__(self, scene, parent):
         QGraphicsView.__init__(self, scene, parent)
-        self.setSceneRect(0, 0, scene.width(), scene.height())
         # self.setViewport(QGLWidget())
+        self.main_widget = parent
         self.scene = scene
         self.drag_canvas_flag = False
         self.prev_x, self.prev_y = 0, 0
@@ -341,6 +442,116 @@ class MvView(QGraphicsView):
         except Exception as e:
             traceback.print_exc()
 
+    def mousePressEvent(self, QMouseEvent):
+        try:
+            view_pos = QMouseEvent.pos()
+            scen_pos = self.mapToScene(view_pos)
+            modifier = QApplication.keyboardModifiers()
+            if QMouseEvent.button() == 4:
+                self.drag_canvas_flag = True
+                self.prev_x = view_pos.x()
+                self.prev_y = view_pos.y()
+            elif QMouseEvent.button() == 1:
+                if modifier == Qt.ControlModifier:
+                    if self.scene.itemAt(scen_pos, QTransform()) != None:
+                        self.scene.ctrl_selected_itm = self.scene.itemAt(scen_pos, QTransform())
+                        self.main_widget.update_selected_info(self.scene.ctrl_selected_itm.idx, self.scene.ctrl_selected_itm.cx,
+                                                              self.scene.ctrl_selected_itm.cy, self.scene.ctrl_selected_itm.ct)
+                        self.scene.drag_item_flag = True
+                        if self.scene.ctrl_selected_itm.idx not in self.main_widget.edit_data_dict.keys():
+                            self.main_widget.edit_data_dict[self.scene.ctrl_selected_itm.idx] = [0, 0, 0]
+            elif QMouseEvent.button() == 2:
+                if modifier == Qt.ControlModifier:
+                    if self.scene.itemAt(scen_pos, QTransform()) != None:
+                        self.scene.ctrl_selected_itm = self.scene.itemAt(scen_pos, QTransform())
+                        self.main_widget.update_selected_info(self.scene.ctrl_selected_itm.idx, self.scene.ctrl_selected_itm.cx,
+                                                              self.scene.ctrl_selected_itm.cy, self.scene.ctrl_selected_itm.ct)
+                        self.scene.rotate_item_flag = True
+                        if self.scene.ctrl_selected_itm.idx not in self.main_widget.edit_data_dict.keys():
+                            self.main_widget.edit_data_dict[self.scene.ctrl_selected_itm.idx] = [0, 0, 0]
+        except Exception as e:
+            traceback.print_exc()
+
+    def mouseMoveEvent(self, QMouseEvent):
+        try:
+            view_pos = QMouseEvent.pos()
+            scen_pos = self.mapToScene(view_pos)
+            curr_x = view_pos.x()
+            curr_y = view_pos.y()
+            delta_x = self.prev_x - curr_x
+            delta_y = self.prev_y - curr_y
+            self.lock_zooming = True
+            self.main_widget.val_mouse_pos = '鼠标位置：%s, %s' % (
+            round((scen_pos.x()) * M2PRATIO, 2), -1 * round((scen_pos.y()) * M2PRATIO, 2))
+            self.main_widget.lbl_mouse_pos.setText(self.main_widget.val_mouse_pos)
+
+            if self.drag_canvas_flag:
+                self.translate(delta_x, delta_y)
+                self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + delta_x)
+                self.verticalScrollBar().setValue(self.verticalScrollBar().value() + delta_y)
+
+            elif self.scene.drag_item_flag == True and self.scene.ctrl_selected_itm.idx != None:
+                # shift
+                self.scene.pix_dict[self.scene.ctrl_selected_itm.idx].cx -= delta_x * M2PRATIO
+                self.scene.pix_dict[self.scene.ctrl_selected_itm.idx].cy -= delta_y * M2PRATIO
+                self.scene.pix_dict[self.scene.ctrl_selected_itm.idx].moveBy(-1*delta_x, -1*delta_y)
+                self.main_widget.edit_data_dict[self.scene.ctrl_selected_itm.idx][0] -= delta_x * M2PRATIO
+                self.main_widget.edit_data_dict[self.scene.ctrl_selected_itm.idx][1] -= delta_y * M2PRATIO
+
+            elif self.scene.rotate_item_flag == True and self.scene.ctrl_selected_itm.idx != None:
+                # totation
+                self.scene.pix_dict[self.scene.ctrl_selected_itm.idx].ct += (delta_x * M2PRATIO / 5.)
+                self.main_widget.edit_data_dict[self.scene.ctrl_selected_itm.idx][2] -= (delta_x * M2PRATIO / 5.)
+                self.scene.pix_dict[self.scene.ctrl_selected_itm.idx].setRotation(self.scene.pix_dict[self.scene.ctrl_selected_itm.idx].ct + self.scene.pix_rotate)
+            self.lock_zooming = False
+
+            self.prev_x = curr_x
+            self.prev_y = curr_y
+        except Exception as e:
+            traceback.print_exc()
+
+    def mouseReleaseEvent(self, QMouseEvent):
+        try:
+            view_pos = QMouseEvent.pos()
+            scen_pos = self.mapToScene(view_pos)
+
+            if self.drag_canvas_flag == True:
+                self.drag_canvas_flag = False
+            elif self.scene.drag_item_flag == True:
+                self.scene.drag_item_flag = False
+                self.scene.ctrl_selected_itm = None
+                self.main_widget.update_selected_info(None, 0, 0, 0)
+                self.main_widget.clear_edit_history()
+                for k in self.main_widget.edit_data_dict:
+                    v = self.main_widget.edit_data_dict[k]
+                    row = self.main_widget.lst_edit_history.rowCount()
+                    self.main_widget.lst_edit_history.setRowCount(row + 1)
+                    self.main_widget.lst_edit_history.setItem(row, 0, QTableWidgetItem(str(k)))
+                    self.main_widget.lst_edit_history.setItem(row, 1, QTableWidgetItem(str(round(v[0], 2))))
+                    self.main_widget.lst_edit_history.setItem(row, 2, QTableWidgetItem(str(round(-1*v[1], 2))))
+                    self.main_widget.lst_edit_history.setItem(row, 3, QTableWidgetItem(str(round(v[2], 2))))
+            elif self.scene.rotate_item_flag == True:
+                self.scene.rotate_item_flag = False
+                self.scene.ctrl_selected_itm = None
+                self.main_widget.update_selected_info(None, 0, 0, 0)
+                self.main_widget.clear_edit_history()
+                for k in self.main_widget.edit_data_dict:
+                    v = self.main_widget.edit_data_dict[k]
+                    row = self.main_widget.lst_edit_history.rowCount()
+                    self.main_widget.lst_edit_history.setRowCount(row + 1)
+                    self.main_widget.lst_edit_history.setItem(row, 0, QTableWidgetItem(str(k)))
+                    self.main_widget.lst_edit_history.setItem(row, 1, QTableWidgetItem(str(round(v[0], 2))))
+                    self.main_widget.lst_edit_history.setItem(row, 2, QTableWidgetItem(str(round(-1*v[1], 2))))
+                    self.main_widget.lst_edit_history.setItem(row, 3, QTableWidgetItem(str(round(v[2], 2))))
+
+        except Exception as e:
+            traceback.print_exc()
+
+    def fast_navigate_by_pos(self, cent_x, cent_y):
+        try:
+            self.centerOn(cent_x / M2PRATIO, -1 * cent_y / M2PRATIO)
+        except Exception as e:
+            traceback.print_exc()
 
 class MvScene(QGraphicsScene):
     def __init__(self, parent):
@@ -375,12 +586,14 @@ class MvScene(QGraphicsScene):
         self.y_axis_gap = 1000
         self.grid_width = 1
 
-        self.ctrl_selected_idx = None
+        self.ctrl_selected_itm = None
         self.dclick_selected_idx = None
         self.dclick_selected_item = None
 
     def mousePressEvent(self, QGraphicsSceneMouseEvent):
         try:
+            print('shift:(%s,%s)'%(self.total_shift_x, self.total_shift_y))
+            print('scene:(%s,%s)'%(QGraphicsSceneMouseEvent.scenePos().x() * M2PRATIO, -1*QGraphicsSceneMouseEvent.scenePos().y() * M2PRATIO))
             modifier = QApplication.keyboardModifiers()
             if QGraphicsSceneMouseEvent.button() == 4:
                 # dragging the whole scene
@@ -389,20 +602,22 @@ class MvScene(QGraphicsScene):
                 # dragging (shifting) single selected item
                 if modifier == Qt.ControlModifier:
                     if self.itemAt(QGraphicsSceneMouseEvent.scenePos(), QTransform()) != None:
-                        self.ctrl_selected_idx = self.itemAt(QGraphicsSceneMouseEvent.scenePos(), QTransform()).idx
+                        self.ctrl_selected_itm = self.itemAt(QGraphicsSceneMouseEvent.scenePos(), QTransform())
+                        self.main_widget.update_selected_info(self.ctrl_selected_itm.idx, self.ctrl_selected_itm.cx,
+                                                              self.ctrl_selected_itm.cy, self.ctrl_selected_itm.ct)
                         self.drag_item_flag = True
-                        if self.ctrl_selected_idx not in self.main_widget.edit_data_dict.keys():
-                            self.main_widget.edit_data_dict[self.ctrl_selected_idx] = [0, 0, 0]
-                            # self.main_widget.edit_disp_dict[self.ctrl_selected_idx] = QListWidgetItem('')
+                        if self.ctrl_selected_itm.idx not in self.main_widget.edit_data_dict.keys():
+                            self.main_widget.edit_data_dict[self.ctrl_selected_itm.idx] = [0, 0, 0]
             elif QGraphicsSceneMouseEvent.button() == 2:
                 # rotating single selected item
                 if modifier == Qt.ControlModifier:
                     if self.itemAt(QGraphicsSceneMouseEvent.scenePos(), QTransform()) != None:
-                        self.ctrl_selected_idx = self.itemAt(QGraphicsSceneMouseEvent.scenePos(), QTransform()).idx
+                        self.ctrl_selected_itm = self.itemAt(QGraphicsSceneMouseEvent.scenePos(), QTransform())
+                        self.main_widget.update_selected_info(self.ctrl_selected_itm.idx, self.ctrl_selected_itm.cx,
+                                                              self.ctrl_selected_itm.cy, self.ctrl_selected_itm.ct)
                         self.rotate_item_flag = True
-                        if self.ctrl_selected_idx not in self.main_widget.edit_data_dict.keys():
-                            self.main_widget.edit_data_dict[self.ctrl_selected_idx] = [0, 0, 0]
-                            # self.main_widget.edit_disp_dict[self.ctrl_selected_idx] = QListWidgetItem('')
+                        if self.ctrl_selected_itm.idx not in self.main_widget.edit_data_dict.keys():
+                            self.main_widget.edit_data_dict[self.ctrl_selected_itm.idx] = [0, 0, 0]
             self.prev_x = QGraphicsSceneMouseEvent.scenePos().x()
             self.prev_y = QGraphicsSceneMouseEvent.scenePos().y()
         except Exception as e:
@@ -410,10 +625,11 @@ class MvScene(QGraphicsScene):
 
     def mouseMoveEvent(self, QGraphicsSceneMouseEvent):
         try:
+            self.main_widget.canvas_view.lock_zooming = True
             self.mouse_x = QGraphicsSceneMouseEvent.scenePos().x()
             self.mouse_y = QGraphicsSceneMouseEvent.scenePos().y()
             self.main_widget.val_mouse_pos = '鼠标位置：%s, %s' % (
-            round((self.mouse_x - self.total_shift_x) * M2PRATIO, 2), -1 * round((self.mouse_y - self.total_shift_y) * M2PRATIO, 2))
+            round((self.mouse_x - self.total_shift_x) * M2PRATIO, 2), -1 * round((self.mouse_y + self.total_shift_y) * M2PRATIO, 2))
             self.main_widget.lbl_mouse_pos.setText(self.main_widget.val_mouse_pos)
             delta_x = QGraphicsSceneMouseEvent.scenePos().x() - self.prev_x
             delta_y = QGraphicsSceneMouseEvent.scenePos().y() - self.prev_y
@@ -422,28 +638,22 @@ class MvScene(QGraphicsScene):
 
             if self.drag_canvas_flag == True:
                 # dragging the hole canvas, need to adjust the total shift, too.
-                for k in self.pix_dict:
-                    self.pix_dict[k].moveBy(delta_x, delta_y)
-                    self.update()
-                for i in range(len(self.grid_list)):
-                    self.grid_list[i].moveBy(delta_x, delta_y)
-                self.total_shift_x += delta_x
-                self.total_shift_y += delta_y
+                self.drag_canvas(delta_x, delta_y)
 
-            elif self.drag_item_flag == True and self.ctrl_selected_idx != None:
+            elif self.drag_item_flag == True and self.ctrl_selected_itm.idx != None:
                 # shift
-                self.pix_dict[self.ctrl_selected_idx].cx += delta_x * M2PRATIO
-                self.pix_dict[self.ctrl_selected_idx].cy += delta_y * M2PRATIO
-                self.pix_dict[self.ctrl_selected_idx].moveBy(delta_x, delta_y)
-                self.main_widget.edit_data_dict[self.ctrl_selected_idx][0] += delta_x * M2PRATIO
-                self.main_widget.edit_data_dict[self.ctrl_selected_idx][1] += delta_y * M2PRATIO
+                self.pix_dict[self.ctrl_selected_itm.idx].cx += delta_x * M2PRATIO
+                self.pix_dict[self.ctrl_selected_itm.idx].cy += delta_y * M2PRATIO
+                self.pix_dict[self.ctrl_selected_itm.idx].moveBy(delta_x, delta_y)
+                self.main_widget.edit_data_dict[self.ctrl_selected_itm.idx][0] += delta_x * M2PRATIO
+                self.main_widget.edit_data_dict[self.ctrl_selected_itm.idx][1] += delta_y * M2PRATIO
 
-            elif self.rotate_item_flag == True and self.ctrl_selected_idx != None:
+            elif self.rotate_item_flag == True and self.ctrl_selected_itm.idx != None:
                 # totation
-                self.pix_dict[self.ctrl_selected_idx].ct += (delta_x * M2PRATIO / 5.)
-                self.main_widget.edit_data_dict[self.ctrl_selected_idx][2] += (delta_x * M2PRATIO / 5.)
-                self.pix_dict[self.ctrl_selected_idx].setRotation(self.pix_dict[self.ctrl_selected_idx].ct + self.pix_rotate)
-
+                self.pix_dict[self.ctrl_selected_itm.idx].ct += (delta_x * M2PRATIO / 5.)
+                self.main_widget.edit_data_dict[self.ctrl_selected_itm.idx][2] += (delta_x * M2PRATIO / 5.)
+                self.pix_dict[self.ctrl_selected_itm.idx].setRotation(self.pix_dict[self.ctrl_selected_itm.idx].ct + self.pix_rotate)
+            self.main_widget.canvas_view.lock_zooming = False
         except Exception as e:
             traceback.print_exc()
 
@@ -451,31 +661,26 @@ class MvScene(QGraphicsScene):
         try:
             if self.drag_canvas_flag == True:
                 self.drag_canvas_flag = False
-
             elif self.drag_item_flag == True:
                 self.drag_item_flag = False
-                self.ctrl_selected_idx = None
+                self.ctrl_selected_itm = None
+                self.main_widget.update_selected_info(None, 0, 0, 0)
                 self.main_widget.clear_edit_history()
                 for k in self.main_widget.edit_data_dict:
                     v = self.main_widget.edit_data_dict[k]
-                    # s = '%s\t%s\t%s\t%s' % (k, round(v[0], 2), round(-1*v[1], 2), round(v[2], 2))
-                    # self.main_widget.lst_edit_history.addItem(s)
                     row = self.main_widget.lst_edit_history.rowCount()
                     self.main_widget.lst_edit_history.setRowCount(row + 1)
                     self.main_widget.lst_edit_history.setItem(row, 0, QTableWidgetItem(str(k)))
                     self.main_widget.lst_edit_history.setItem(row, 1, QTableWidgetItem(str(round(v[0], 2))))
                     self.main_widget.lst_edit_history.setItem(row, 2, QTableWidgetItem(str(round(-1*v[1], 2))))
                     self.main_widget.lst_edit_history.setItem(row, 3, QTableWidgetItem(str(round(v[2], 2))))
-
             elif self.rotate_item_flag == True:
                 self.rotate_item_flag = False
-                self.ctrl_selected_idx = None
-                # self.main_widget.lst_edit_history.clearContents()
+                self.ctrl_selected_itm = None
+                self.main_widget.update_selected_info(None, 0, 0, 0)
                 self.main_widget.clear_edit_history()
                 for k in self.main_widget.edit_data_dict:
                     v = self.main_widget.edit_data_dict[k]
-                    # s = '%s\t%s\t%s\t%s' % (k, round(v[0], 2), round(-1*v[1], 2), round(v[2], 2))
-                    # self.main_widget.lst_edit_history.addItem(s)
                     row = self.main_widget.lst_edit_history.rowCount()
                     self.main_widget.lst_edit_history.setRowCount(row + 1)
                     self.main_widget.lst_edit_history.setItem(row, 0, QTableWidgetItem(str(k)))
@@ -592,18 +797,18 @@ class MvScene(QGraphicsScene):
         self.grid_list = []
         self.grid_pen = QPen(QColor.fromRgb(195, 12, 255))
         self.grid_pen.setWidth(self.grid_width)
-        for i in range(int(self.minx * M2PRATIO // self.x_axis_gap), int(self.maxx * M2PRATIO // self.x_axis_gap) + 1):
+        for i in range(int(self.minx // self.x_axis_gap), int(self.maxx // self.x_axis_gap) + 1):
             self.grid_vert.append((
                 i * self.x_axis_gap * self.scale / M2PRATIO,
-                -1 * self.miny,
+                -1 * self.miny / M2PRATIO,
                 i * self.x_axis_gap * self.scale / M2PRATIO,
-                -1 * self.maxy
+                -1 * self.maxy / M2PRATIO
             ))
-        for j in range(int(self.miny * M2PRATIO // self.y_axis_gap), int(self.maxy * M2PRATIO // self.y_axis_gap) + 1):
+        for j in range(int(self.miny // self.y_axis_gap), int(self.maxy // self.y_axis_gap) + 1):
             self.grid_horz.append((
-                self.minx,
+                self.minx / M2PRATIO,
                 -1 * j * self.y_axis_gap * self.scale / M2PRATIO,
-                self.maxx,
+                self.maxx / M2PRATIO,
                 -1 * j * self.y_axis_gap * self.scale / M2PRATIO
             ))
 
@@ -635,6 +840,10 @@ class MvScene(QGraphicsScene):
             self.load_grid()
             self.update()
             self.main_widget.canvas_view.lock_zooming = False
+            # midx = (self.main_widget.canvas_view.scene.maxx-self.main_widget.canvas_view.scene.minx)/M2PRATIO/2
+            # midy = (self.main_widget.canvas_view.scene.maxy-self.main_widget.canvas_view.scene.miny)/M2PRATIO/2
+            self.main_widget.canvas_view.setSceneRect((self.main_widget.canvas_view.scene.minx-self.main_widget.canvas_padding)/M2PRATIO, -1*(self.main_widget.canvas_view.scene.maxy+self.main_widget.canvas_padding)/M2PRATIO, abs(self.main_widget.canvas_view.scene.maxx-self.main_widget.canvas_view.scene.minx+1000+self.main_widget.canvas_padding*2)/M2PRATIO, abs(self.main_widget.canvas_view.scene.maxy-self.main_widget.canvas_view.scene.miny+(self.main_widget.canvas_padding*2))/M2PRATIO)
+            self.main_widget.canvas_view.centerOn(self.main_widget.canvas_view.scene.minx/M2PRATIO, -1*self.main_widget.canvas_view.scene.miny/M2PRATIO)
         except Exception as e:
             traceback.print_exc()
 
@@ -663,7 +872,7 @@ class MvScene(QGraphicsScene):
             self.y_axis_gap = 1000
             self.grid_width = 1.
 
-            self.ctrl_selected_idx = None
+            self.ctrl_selected_itm = None
             self.dclick_selected_idx = None
             self.dclick_selected_item = None
             for k in self.pix_dict:
@@ -675,11 +884,31 @@ class MvScene(QGraphicsScene):
         except Exception as e:
             traceback.print_exc()
 
+    def drag_canvas(self, delta_x, delta_y):
+        print('x:%s|y:%s'%(delta_x, delta_y))
+        for k in self.pix_dict:
+            self.pix_dict[k].moveBy(delta_x, delta_y)
+            self.update()
+        for i in range(len(self.grid_list)):
+            self.grid_list[i].moveBy(delta_x, delta_y)
+        self.total_shift_x += delta_x
+        self.total_shift_y -= delta_y
+        print('total shift:%s, %s' % ((-1 * self.total_shift_x * M2PRATIO),  self.total_shift_y * M2PRATIO))
+
+    # def fast_navigate_by_pos(self, x, y):
+    #     # print(self.main_widget.canvas_view.size())
+    #     # print(self.main_widget.canvas_view.width())
+    #     # print(self.main_widget.canvas_view.height())
+    #     dx = -1 * x / M2PRATIO - self.total_shift_x + self.main_widget.canvas_view.width()//2
+    #     dy = 1 * y / M2PRATIO + self.total_shift_y - self.main_widget.canvas_view.height()//2
+    #     self.drag_canvas(dx, dy)
+
 class MvWidget(QWidget):
     def __init__(self, parent):
         QWidget.__init__(self, parent)
         self.main_window = parent
         self.canvas_scene = MvScene(self)
+        # print('aaa %s,%s,%s,%s'%(self.canvas_scene.maxx, self.canvas_scene.minx, self.canvas_scene.maxy, self.canvas_scene.miny))
         self.canvas_view = MvView(self.canvas_scene, self)
         self.control_vbox = QVBoxLayout()
         self.root_hbox = QHBoxLayout()
@@ -689,6 +918,7 @@ class MvWidget(QWidget):
         self.selected_node_pos = '-'
         self.selected_node_angle = '-'
         self.m2p_ratio = 0.40625
+        self.canvas_padding = 5000
         self.socket_save_path = os.path.realpath(os.path.curdir).replace('\\', '/') + '/' + 'socket_data'
         self.configfile = {}
         self.edit_data_dict = {}
@@ -704,6 +934,7 @@ class MvWidget(QWidget):
 
         self.frm_control_fram = QFrame()
         self.btn_gen_global_view = QPushButton('生成全局地图')
+        self.btn_gen_global_view.clicked.connect(self.gen_global_view_handler)
         self.lbl_mouse_pos = QLabel()
 
         self.lbl_mouse_pos.setText(self.val_mouse_pos)
@@ -724,20 +955,27 @@ class MvWidget(QWidget):
         self.box_x_gap = QHBoxLayout()
         self.lbl_x_gap = QLabel('x轴网格间距(mm)')
         self.ent_x_gap = QLineEdit('1000')
+        self.ent_x_gap.setValidator(QDoubleValidator())
         self.box_y_gap = QHBoxLayout()
         self.lbl_y_gap = QLabel('y轴网格间距(mm)')
         self.ent_y_gap = QLineEdit('1000')
+        self.ent_y_gap.setValidator(QDoubleValidator())
         self.btn_set_new_gap = QPushButton('设定新网格间距')
         self.btn_set_show_grid = QPushButton()
-        self.btn_set_show_grid.setText(self.val_btn_enter_edit_mod)
+        self.btn_set_show_grid.setText(self.val_btn_set_show_grid)
 
         self.box_x_cent = QHBoxLayout()
         self.lbl_x_cent = QLabel('视野中心x值(mm)')
         self.ent_x_cent = QLineEdit('0')
+        self.ent_x_cent.setText('18000')
+        self.ent_x_cent.setValidator(QDoubleValidator())
         self.box_y_cent = QHBoxLayout()
         self.lbl_y_cent = QLabel('视野中心y值(mm)')
         self.ent_y_cent = QLineEdit('0')
+        self.ent_y_cent.setText('20000')
+        self.ent_y_cent.setValidator(QDoubleValidator())
         self.btn_set_new_cent = QPushButton('设定新中心点')
+        self.btn_set_new_cent.clicked.connect(self.set_new_cent_handler)
 
         self.btn_enter_edit_mod = QPushButton()
         self.btn_enter_edit_mod.setText(self.val_btn_enter_edit_mod)
@@ -751,6 +989,7 @@ class MvWidget(QWidget):
         self.box_btn_edit = QHBoxLayout()
 
         self.btn_delete_selected_node = QPushButton()
+        self.btn_delete_selected_node.clicked.connect(self.edit_delete_handler)
         self.btn_delete_selected_node.setText(self.val_btn_delete_selected_node)
         self.initUI()
 
@@ -786,7 +1025,7 @@ class MvWidget(QWidget):
         self.box_y_cent.addWidget(self.ent_y_cent)
         self.control_vbox.addWidget(self.btn_set_new_cent)
         self.control_vbox.addWidget(LineSeparator())
-        self.control_vbox.addWidget(self.btn_enter_edit_mod)
+        # self.control_vbox.addWidget(self.btn_enter_edit_mod)
         self.control_vbox.addWidget(self.lst_edit_history)
         self.control_vbox.addLayout(self.box_btn_edit)
         self.control_vbox.addStrut(1)
@@ -803,6 +1042,9 @@ class MvWidget(QWidget):
         self.lbl_current_scale.setText(self.val_current_scale)
 
     # -------------------------------- control frame handler --------------------------------
+
+    def gen_global_view_handler(self):
+        self.global_view = MvGlobalView(self)
 
     def clear_edit_history(self):
         while self.lst_edit_history.rowCount() != 0:
@@ -892,6 +1134,32 @@ class MvWidget(QWidget):
         except Exception as e:
             traceback.print_exc()
 
+    def edit_delete_handler(self):
+        pass
+
+    def update_selected_info(self, idx, x, y, t):
+        if idx != None:
+            self.val_selected_node_id = '选中节点ID：%s' % idx
+            self.val_selected_node_pos = '坐标：%s, %s' % (round(x, 2), -1 * round(y, 2))
+            self.val_selected_node_angle = '选中节点角度：%s' % t
+            self.lbl_selected_node_id.setText(self.val_selected_node_id)
+            self.lbl_selected_node_pos.setText(self.val_selected_node_pos)
+            self.lbl_selected_node_angle.setText(self.val_selected_node_angle)
+        else:
+            self.val_selected_node_id = '选中节点ID：-'
+            self.val_selected_node_pos = '选中节点位置：-'
+            self.val_selected_node_angle = '选中节点角度：-'
+            self.lbl_selected_node_id.setText(self.val_selected_node_id)
+            self.lbl_selected_node_pos.setText(self.val_selected_node_pos)
+            self.lbl_selected_node_angle.setText(self.val_selected_node_angle)
+
+    def set_new_cent_handler(self):
+        try:
+            cent_x = float(self.ent_x_cent.text())
+            cent_y = float(self.ent_y_cent.text())
+            self.canvas_view.fast_navigate_by_pos(cent_x, cent_y)
+        except Exception as e:
+            traceback.print_exc()
 
 class MvWindow(QMainWindow):
     def __init__(self):
@@ -904,7 +1172,7 @@ class MvWindow(QMainWindow):
         self.main_widget.canvas_view.setGeometry(120, 0, self.width(), self.height())
         self.main_widget.canvas_view.setMouseTracking(True)
         self.main_widget.canvas_view.setBackgroundBrush(QBrush(QColor.fromRgb(25, 25, 25)))
-        if os.path.exists(os.path.dirname(os.path.realpath(__file__))+os.path.sep + '/''mapviewer.cfg'):
+        if os.path.exists(os.path.dirname(os.path.realpath(__file__))+os.path.sep + '/'+'mapviewer.cfg'):
             cfg = open(os.path.dirname(os.path.realpath(__file__))+os.path.sep+'mapviewer.cfg', 'r')
             self.main_widget.configfile = dict([e.split('=') for e in cfg.readlines()])
             cfg.close()
@@ -928,24 +1196,27 @@ class MvWindow(QMainWindow):
 
         self.act_param_config = QAction('参数设置', self)
         self.act_param_config.setStatusTip('对MapViewer的参数进行设置')
-        self.act_import_single_img = QAction('导入一张图像', self)
-        self.act_import_single_img_commit = QAction('提交导入图像', self)
-        self.act_import_labeled_set = QAction('导入标注集合', self)
+        self.act_gen_hd_global_map = QAction('生成高清全局地图', self)
+        self.act_gen_hd_global_map.setStatusTip('生成的高清地图“hd_global_viewmap.png”尺寸为长轴=10240，后期加入可调参数功能，保存在当前工具根目录中')
+        self.act_import_single_img = QAction('× 导入一张图像', self)
+        self.act_import_single_img_commit = QAction('× 提交导入图像', self)
+        self.act_import_labeled_set = QAction('× 导入标注集合', self)
         self.act_import_raw_set = QAction('导入未标注集合', self)
-        self.act_fix_labeled_set = QAction('固定标注集', self)
-        self.act_label_n_filter = QAction('标注去重', self)
+        self.act_fix_labeled_set = QAction('× 固定标注集', self)
+        self.act_label_n_filter = QAction('× 标注去重', self)
         self.act_import_from_sqlite = QAction('从Sqlite导入', self)
-        self.act_export_to_sqlite = QAction('往Sqlite导出', self)
+        self.act_export_to_sqlite = QAction('× 往Sqlite导出', self)
         self.act_gen_config_gradient_param = QAction('配置地图生成参数', self)
         self.act_gen_basic_dataset = QAction('生成基础数据集(640×640)', self)
         self.act_gen_sqlite_db = QAction('生成数据库(320×320)', self)
         self.act_gen_gradient_update = QAction('梯度下降更新', self)
-        self.act_socket_open_data_port = QAction('打开图像采集Socket', self)
-        self.act_socket_export_to_sqlite = QAction('将采集图像到处为Sqlite', self)
+        self.act_socket_open_data_port = QAction('× 打开图像采集Socket', self)
+        self.act_socket_export_to_sqlite = QAction('× 将采集图像导出为Sqlite', self)
         self.act_about_version = QAction('关于Quicktron Mapviewer', self)
-        self.act_about_help = QAction('使用说明', self)
+        self.act_about_help = QAction('× 使用说明', self)
 
         self.act_param_config.triggered.connect(self.open_param_config)
+        self.act_gen_hd_global_map.triggered.connect(self.gen_hd_global_map)
         self.act_import_single_img.triggered.connect(self.import_single_img)
         self.act_import_single_img_commit.triggered.connect(self.import_single_img_commit)
         self.act_import_labeled_set.triggered.connect(self.import_labeled_set)
@@ -966,6 +1237,7 @@ class MvWindow(QMainWindow):
         self.menu = self.menuBar()
         self.menu_config = self.menu.addMenu('选项  ')
         self.menu_config.addAction(self.act_param_config)
+        self.menu_config.addAction(self.act_gen_hd_global_map)
         self.menu_config.addSeparator()
         self.menu_config.addAction(self.act_import_single_img)
         self.menu_config.addAction(self.act_import_single_img_commit)
@@ -1004,7 +1276,11 @@ class MvWindow(QMainWindow):
         self.setWindowTitle('Quicktron Map Viewer')
         self.setWindowIcon(QIcon(os.path.dirname(os.path.realpath(__file__))+os.path.sep+'ico.ico'))
         self.setGeometry(0, 0, 1080, 780)
-        self.show()
+        self.showMaximized()
+
+    def do_nothing(self):
+        # literally doing nothing
+        pass
 
     # ------------------------------------- handler function -------------------------------------
 
@@ -1022,7 +1298,35 @@ class MvWindow(QMainWindow):
                 self.progress.setValue(int(v))
             elif k == 'stop':
                 self.progress.setVisible(False)
-                self.status_message.setText('共 %s 个地图瓦片数据' % len(self.main_widget.canvas_scene.pix_dict))
+                self.status_message.setText('共 %s 个地图瓦片数据，坐标 (%s, %s) 到 (%s, %s)' % (
+                    len(self.main_widget.canvas_scene.pix_dict),
+                    round(self.main_widget.canvas_scene.minx, 2),
+                    round(self.main_widget.canvas_scene.miny, 2),
+                    round(self.main_widget.canvas_scene.maxx, 2),
+                    round(self.main_widget.canvas_scene.maxy, 2)))
+        except Exception as e:
+            traceback.print_exc()
+
+    def handle_progress_bar_gen_global(self, msg):
+        try:
+            k, v = msg.split(':')
+            if k == 'start':
+                self.progress.setVisible(True)
+                self.status_message.setText('正在生成HD全局地图...')
+            elif k == 'max':
+                self.progress.setMaximum(int(v))
+            elif k == 'min':
+                self.progress.setMinimum(int(v))
+            elif k == 'current':
+                self.progress.setValue(int(v))
+            elif k == 'stop':
+                self.progress.setVisible(False)
+                self.status_message.setText('共 %s 个地图瓦片数据，坐标 (%s, %s) 到 (%s, %s)' % (
+                    len(self.main_widget.canvas_scene.pix_dict),
+                    round(self.main_widget.canvas_scene.minx, 2),
+                    round(self.main_widget.canvas_scene.miny, 2),
+                    round(self.main_widget.canvas_scene.maxx, 2),
+                    round(self.main_widget.canvas_scene.maxy, 2)))
         except Exception as e:
             traceback.print_exc()
 
@@ -1033,6 +1337,16 @@ class MvWindow(QMainWindow):
             about = MvPreference(self.main_widget)
             about.show()
             about.exec_()
+        except Exception as e:
+            traceback.print_exc()
+
+    def gen_hd_global_map(self):
+        try:
+            self.hd_global_thread = ThreadHDGlobalMap(self.main_widget)
+            self.hd_global_thread.start()
+            self.hd_global_thread.signal.connect(self.handle_progress_bar_gen_global)
+            self.hd_global_thread.finished.connect(self.do_nothing)
+            self.using_db = False
         except Exception as e:
             traceback.print_exc()
 
@@ -1073,7 +1387,6 @@ class MvWindow(QMainWindow):
             self.load_db_thread = ThreadLoadPixDB(self.main_widget, self.db_path)
             self.load_db_thread.start()
             self.load_db_thread.signal.connect(self.handle_progress_bar)
-            self.load_db_thread.finished.connect(self.main_widget.canvas_scene.handle_load_pixmaps_finished)
             self.using_db = True
         except Exception as e:
             traceback.print_exc()
