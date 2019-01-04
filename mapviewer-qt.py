@@ -22,6 +22,8 @@ import logging
 import traceback
 import sqlite3
 import numpy as np
+import socket as sk
+import reg_core
 from PIL import Image as im
 from PIL import  ImageQt as imq
 from PyQt5.QtCore import Qt, QThread, QPointF, QPoint, pyqtSignal
@@ -43,6 +45,12 @@ class Image(QGraphicsItem):
         self.cy = y
         self.ct = t
 
+class ImgInfObj:
+    def __init__(self, idx, x, y, theta):
+        self.idx = idx
+        self.x = x
+        self.y = y
+        self.theta = theta
 
 class LineSeparator(QFrame):
     def __init__(self):
@@ -342,6 +350,279 @@ class ThreadGlobalMap(QThread):
             traceback.print_exc()
 
 
+class ThreadSocket(QThread):
+    signal = pyqtSignal('PyQt_PyObject')
+    def __init__(self, main_widget):
+        QThread.__init__(self, main_widget)
+        self.main_widget = main_widget
+        self.isrunning = True
+
+    def run(self):
+        try:
+            self.sock = sk.socket(sk.AF_INET, sk.SOCK_DGRAM)
+            self.sock.bind(('192.168.1.11', 20014))
+            self.sock_open_flag = True
+
+            self.sk_frame_id = 0
+            self.sk_frame_id_curr = 0
+            self.sk_line_idx = 0
+            self.sk_line_idx_prev = 0
+            self.n_add = 0
+
+            self.bmp = ''
+            cnt = 0
+            while True:
+                try:
+                    data, _ = self.sock.recvfrom(672)
+                    if len(data) != 672:
+                        continue
+                    self.sk_frame_id = ord(data[6]) * 256 + ord(data[7])
+                    self.sk_line_idx = ord(data[8]) * 256 + ord(data[9])
+                    if self.sk_line_idx == 0:
+                        self.bmp = ''
+                    self.bmp += data[32:]
+                    if self.sk_line_idx == 479 and len(self.bmp) == 480 * 640:
+                        self.sk_frame_id_curr = self.sk_frame_id
+                        arr = np.fromstring(self.bmp, dtype='uint8').reshape((480, 640))
+                        self.sk_image = im.fromarray(arr)
+
+                        self.bmp = ''
+                except Exception as e:
+                    self.bmp = ''
+                    print('sock_loop inner ' + str(e))
+        except Exception as e:
+            traceback.print_exc()
+
+
+class ThreadGenBaseData(QThread):
+    signal = pyqtSignal('PyQt_PyObject')
+    def __init__(self, main_widget):
+        QThread.__init__(self, main_widget)
+        self.main_widget = main_widget
+        self.isrunning = True
+        self.reg = reg_core.reg_core()
+        self.reg.initialize(640, 480, 8, os.path.dirname(os.path.realpath(__file__)) + os.path.sep + 'caliberation.values', 0)
+
+    def run(self):
+        try:
+            self.signal.emit('start:0')
+            self.signal.emit('min:0')
+            self.signal.emit('max:1')
+            gen_raw_path = self.main_widget.gen_raw_path.replace('/', '\\\\')
+            gen_key_path = self.main_widget.gen_key_path.replace('/', '\\\\')
+            gen_nod_path = self.main_widget.gen_nod_path.replace('/', '\\\\')
+            if not os.path.exists(gen_raw_path):
+                os.mkdir(gen_raw_path)
+            if not os.path.exists(gen_key_path):
+                os.mkdir(gen_key_path)
+            if not os.path.exists(gen_nod_path):
+                os.mkdir(gen_nod_path)
+            self.reg.find_and_save_key(gen_raw_path, gen_key_path, gen_nod_path)
+            self.signal.emit('current:1')
+            QMessageBox.information(self, '提示', '基础数据已生成完成，请对标注点进行修正')
+            self.main_widget.main_window.raw_path = gen_key_path
+            self.signal.emit('stop:0')
+        except Exception as e:
+            traceback.print_exc()
+
+
+class ThreadGenDB(QThread):
+    signal = pyqtSignal('PyQt_PyObject')
+    def __init__(self, main_widget):
+        QThread.__init__(self, main_widget)
+        self.main_widget = main_widget
+        self.isrunning = True
+        self.reg = reg_core.reg_core()
+        self.reg.initialize(640, 480, 8, os.path.dirname(os.path.realpath(__file__)) + os.path.sep + 'caliberation.values', 0)
+
+    def run(self):
+        self.signal.emit('start:0')
+        db_path = self.main_widget.gen_db_path
+        db_name = self.main_widget.gen_db_name
+        if not db_name.lower().endswith('.db'):
+            db_name += '.db'
+        db_full = db_path + '/' + db_name
+        if os.path.exists(db_full):
+            QMessageBox.warning(self, '错误', '数据库文件 "%s" 已存在'%db_full)
+            return
+        if not os.path.exists(self.main_widget.gen_key_path) or not os.path.exists(self.main_widget.gen_nod_path):
+            QMessageBox.warning(self, '错误', '基础数据集路径配置错误')
+            return
+        try:
+            self.signal.emit('start:1')
+            conn = sqlite3.connect(db_full)
+            create_raw_str = '''
+                create table if not exists zhdl_raw (
+                    id integer primary key,
+                    timestamp integer,
+                    device_num integer,
+                    speed real,
+                    x real not null,
+                    y real not null,
+                    theta real not null,
+                    image blob not null,
+                    is_keypoint integer not null,
+                    pairid integer
+                );
+            '''
+            create_map_str = '''
+                create table if not exists zhdl_map (
+                    id integer primary key,
+                    x real not null,
+                    y real not null,
+                    heading real not null,
+                    processed_image blob,
+                    raw_image blob
+                );
+            '''
+            create_link_str = '''
+                create table if not exists zhdl_link (
+                    id integer primary key,
+                    raw_id integer not null,
+                    link_id integer not null,
+                    x real not null,
+                    y real not null,
+                    theta real not null,
+                    is_keypoint integer not null
+                );
+            '''
+            curs = conn.cursor()
+            curs.execute(create_raw_str)
+            curs.execute(create_map_str)
+            curs.execute(create_link_str)
+            conn.commit()
+            self.signal.emit('start:2')
+            gen_key_list = []
+            gen_node_list = []
+            for _,_,fs in os.walk(self.main_widget.gen_key_path):
+                if len(fs) == 0:
+                    QMessageBox.warning(self, '错误', '关键节点数据路径中无有效数据')
+                    os.remove(db_full)
+                    return
+                self.signal.emit('min:0')
+                self.signal.emit('max:%s'%len(fs))
+                current = 0
+                for f in fs:
+                    idx, x, y, theta = f[:-4].split('_')
+                    curs.execute('insert into zhdl_raw values (?,?,?,?,?,?,?,?,?,?)',(
+                        int(idx),
+                        0,
+                        0,
+                        0.3,
+                        float(x),
+                        float(y),
+                        float(theta),
+                        np.array(im.open(self.main_widget.gen_key_path+'/'+f)).astype('uint8').flatten().tobytes(),
+                        1,
+                        0,
+                    ))
+                    current += 1
+                    self.signal.emit('current:%s'%current)
+                    gen_key_list.append(ImgInfObj(int(idx), float(x), float(y), float(theta)))
+            for _,_,fs in os.walk(self.main_widget.gen_nod_path):
+                if len(fs) == 0:
+                    QMessageBox.warning(self, '错误', '普通键节点数据路径中无有效数据')
+                    os.remove(db_full)
+                    return
+                self.signal.emit('min:0')
+                self.signal.emit('max:%s'%len(fs))
+                current = 0
+                for f in fs:
+                    idx, x, y, theta = f[:-4].split('_')
+                    curs.execute('insert into zhdl_raw values (?,?,?,?,?,?,?,?,?,?)',(
+                        int(idx),
+                        0,
+                        0,
+                        0.3,
+                        float(x),
+                        float(y),
+                        float(theta),
+                        np.array(im.open(self.nodeset_path_val.get()+'/'+f)).astype('uint8').flatten().tobytes(),
+                        0,
+                        0,
+                    ))
+                    current += 1
+                    self.signal.emit('current:%s'%current)
+                    gen_node_list.append(ImgInfObj(int(idx), float(x), float(y), float(theta)))
+            conn.commit()
+
+            # --------- 生成keypair ---------
+            gen_pair_list = self.gen_find_all_key_pairs(gen_key_list)
+            gen_link_list = []
+            for e in gen_pair_list:
+                gen_link_list.append([e[0]])
+            for i in range(len(gen_node_list)):
+                for k in range(len(gen_pair_list)):
+                    if self.gen_find_node_inside_key_pair(gen_pair_list[k], gen_node_list[i]):
+                        gen_link_list[k].append(gen_node_list[i])
+            for k in range(len(gen_pair_list)):
+                gen_link_list[k].append(gen_pair_list[k][1])
+
+            # --------- 存入keypair ---------
+            gen_link_idx = 1
+            self.signal.emit('min:0')
+            self.signal.emit('max:%s' % len(gen_link_list))
+            current = 0
+            for k in range(len(gen_link_list)):
+                for i in range(len(gen_link_list[k])):
+                    is_keypoint = 1 if i==0 or i==len(gen_link_list[k])-1 else 0
+                    curs.execute('insert into zhdl_link values (?,?,?,?,?,?,?)', (
+                        gen_link_idx,
+                        gen_link_list[k][i].idx,
+                        k,
+                        gen_link_list[k][i].x,
+                        gen_link_list[k][i].y,
+                        gen_link_list[k][i].theta,
+                        is_keypoint,
+                        ))
+                    gen_link_idx += 1
+                current += 1
+                self.signal.emit('current:%s' % current)
+            conn.commit()
+
+            # --------- 读入新数据并保存preprocessed ---------
+            self.signal.emit('msg:正在生成 zhdl_map 数据表...')
+            self.reg.gen_map_db(db_full.replace('/', '\\'))
+            self.main_widget.main_window.db_path = db_full
+            QMessageBox.information(self, '提示', '数据库创建成功')
+            self.signal.emit('stop:0')
+        except Exception as e:
+            traceback.print_exc()
+            QMessageBox.critical(self, '错误', '数据库创建失败，错误信息：\n%s'%e)
+            if os.path.exists(db_full):
+                os.remove(db_full)
+        finally:
+            conn.close()
+
+    def gen_find_all_key_pairs(self, key_list):
+        pair_list = []
+        for i in range(len(key_list)):
+            for j in range(len(key_list)):
+                if i != j:
+                    inf1 = key_list[i]
+                    inf2 = key_list[j]
+                    if(tuple((inf1, inf2)) not in pair_list and tuple((inf2, inf1)) not in pair_list and abs(inf1.x-inf2.x)<1100 and abs(inf1.y-inf2.y)<1100 and self.euc_dis(inf1.x, inf1.y, inf2.x, inf2.y)<1100):
+                        pair_list.append(tuple((inf1, inf2)))
+        return pair_list
+
+    def gen_find_node_inside_key_pair(self, kp, node):
+        mid_x = (kp[0].x + kp[1].x) / 2.
+        mid_y = (kp[0].y + kp[1].y) / 2.
+        if abs(kp[0].x-kp[1].x) > abs(kp[0].y-kp[1].y):
+            # 水平的link
+            if abs(mid_x - node.x) < 500 and abs(mid_y - node.y) < 25:
+                return True
+            else:
+                return False
+        else:
+            if abs(mid_y - node.y) < 500 and abs(mid_x - node.x) < 25:
+                return True
+            else:
+                return False
+
+# ------------------------------------------------- dialogs ------------------------------------------------------------
+
+
 class MvAbout(QDialog):
     def __init__(self):
         QDialog.__init__(self)
@@ -349,12 +630,15 @@ class MvAbout(QDialog):
         self.box = QVBoxLayout()
         self.lbl001 = QLabel('Quicktron')
         self.lbl002 = QLabel('Texture Localization')
-        self.lbl003 = QLabel('sjafrgaergheurghiaufgakjrngakrjgnkejrgnugaufuf94q3iu0934')
+        self.lbl003 = QLabel('the about information will be listed here, currently have none.')
         self.box.addWidget(self.lbl001)
         self.box.addWidget(self.lbl002)
+        self.box.addWidget(LineSeparator())
         self.box.addWidget(self.lbl003)
         self.box.addStretch(1)
         self.setLayout(self.box)
+        self.setWindowTitle('快仓纹理定位地图管理器')
+        self.setWindowIcon(QIcon(os.path.dirname(os.path.realpath(__file__)) + os.path.sep + 'ico.ico'))
 
 
 class MvGlobalView(QDialog):
@@ -451,7 +735,54 @@ class MvSocket(QDialog):
     def __init__(self, parent):
         QDialog.__init__(self, parent)
         self.main_widget = parent
+        self.setGeometry(320, 120, 860, 520)
+        self.setFixedSize(860, 520)
+        self.setWindowTitle('图像采集接口')
+        self.box_root = QHBoxLayout()
 
+        self.box_sk_record = QVBoxLayout()
+        self.lst_sk_record = QListWidget()
+        self.btn_sk_remove = QPushButton('删除当前图像')
+        self.btn_sk_remove.setDisabled(True)
+        self.btn_sk_remove.clicked.connect(self.handle_remove_photo)
+
+        self.box_sk_canvas = QVBoxLayout()
+        self.lbl_sk_canvas = QLabel()
+        self.lbl_sk_canvas.setPixmap(imq.toqpixmap(im.new('L', (640, 480))))
+        self.box_sk_param = QHBoxLayout()
+        self.lbl_param_x = QLabel('x值：')
+        self.ent_param_x = QLineEdit()
+        self.ent_param_x.setValidator(QDoubleValidator())
+        self.lbl_param_y = QLabel('y值：')
+        self.ent_param_y = QLineEdit()
+        self.ent_param_y.setValidator(QDoubleValidator())
+        self.lbl_param_t = QLabel('θ值：')
+        self.ent_param_t = QLineEdit()
+        self.ent_param_t.setValidator(QDoubleValidator())
+        self.btn_commit = QPushButton('采集当前图像')
+        self.btn_commit.setFixedWidth(120)
+        self.btn_commit.clicked.connect(self.handle_commit_photo)
+
+        self.box_sk_record.addWidget(self.lst_sk_record)
+        self.box_sk_record.addWidget(self.btn_sk_remove)
+        self.box_sk_canvas.addWidget(self.lbl_sk_canvas)
+        self.box_sk_param.addWidget(self.lbl_param_x)
+        self.box_sk_param.addWidget(self.ent_param_x)
+        self.box_sk_param.addWidget(self.lbl_param_y)
+        self.box_sk_param.addWidget(self.ent_param_y)
+        self.box_sk_param.addWidget(self.lbl_param_t)
+        self.box_sk_param.addWidget(self.ent_param_t)
+        self.box_sk_param.addWidget(self.btn_commit)
+        self.box_sk_canvas.addLayout(self.box_sk_param)
+        self.box_root.addLayout(self.box_sk_record)
+        self.box_root.addLayout(self.box_sk_canvas)
+        self.setLayout(self.box_root)
+
+    def handle_commit_photo(self):
+        pass
+
+    def handle_remove_photo(self):
+        pass
 
 class MvPreference(QDialog):
     def __init__(self, parent):
@@ -555,6 +886,158 @@ class MvPreference(QDialog):
         except Exception as e:
             traceback.print_exc()
 
+
+class MvGenConfig(QDialog):
+    def __init__(self, parent):
+        QDialog.__init__(self, parent)
+        self.main_widget = parent
+
+        self.setGeometry(320, 120, 480, 480)
+        self.setFixedSize(480, 480)
+        self.setWindowTitle('梯度下降参数设置')
+        self.box_root = QVBoxLayout()
+
+        self.box_raw_data = QHBoxLayout()
+        self.btn_raw_data = QPushButton('行车采集数据路径')
+        self.btn_raw_data.clicked.connect(self.handle_ask_raw_data_path)
+        self.val_raw_data = self.main_widget.gen_raw_path
+        self.lbl_raw_data = QLabel()
+        self.lbl_raw_data.setText(self.val_raw_data)
+        self.box_key_data = QHBoxLayout()
+        self.btn_key_data = QPushButton('关键节点保存路径')
+        self.btn_key_data.clicked.connect(self.handle_ask_key_data_path)
+        self.val_key_data = self.main_widget.gen_key_path
+        self.lbl_key_data = QLabel()
+        self.lbl_key_data.setText(self.val_key_data)
+        self.box_nod_data = QHBoxLayout()
+        self.btn_nod_data = QPushButton('中间节点保存路径')
+        self.btn_nod_data.clicked.connect(self.handle_ask_nod_data_path)
+        self.val_nod_data = self.main_widget.gen_nod_path
+        self.lbl_nod_data = QLabel()
+        self.lbl_nod_data.setText(self.val_nod_data)
+
+        self.box_db_path = QHBoxLayout()
+        self.btn_db_path = QPushButton('数据库保存路径')
+        self.btn_db_path.clicked.connect(self.handle_ask_db_path)
+        self.val_db_path = self.main_widget.gen_db_path
+        self.lbl_db_path = QLabel()
+        self.lbl_db_path.setText(self.val_db_path)
+        self.box_db_name = QHBoxLayout()
+        self.lbl_db_name = QLabel('数据库名')
+        self.ent_db_name = QLineEdit()
+        self.ent_db_name.setText(self.main_widget.gen_db_name)
+
+        self.box_param = QHBoxLayout()
+        self.lbl_x_rate = QLabel('x-学习率：')
+        self.ent_x_rate = QLineEdit()
+        self.ent_x_rate.setValidator(QDoubleValidator())
+        self.ent_x_rate.setText(str(self.main_widget.gen_x_rate))
+        self.lbl_y_rate = QLabel('y-学习率：')
+        self.ent_y_rate = QLineEdit()
+        self.ent_y_rate.setValidator(QDoubleValidator())
+        self.ent_y_rate.setText(str(self.main_widget.gen_y_rate))
+        self.lbl_t_rate = QLabel('θ-学习率：')
+        self.ent_t_rate = QLineEdit()
+        self.ent_t_rate.setValidator(QDoubleValidator())
+        self.ent_t_rate.setText(str(self.main_widget.gen_t_rate))
+        self.lbl_epochs = QLabel('迭代次数：')
+        self.ent_epochs = QLineEdit()
+        self.ent_epochs.setValidator(QDoubleValidator())
+        self.ent_epochs.setText(str(self.main_widget.gen_epochs))
+
+        self.box_commit = QHBoxLayout()
+        self.btn_commit = QPushButton('提交参数')
+        self.btn_commit.clicked.connect(self.handle_gen_commit_param)
+        self.btn_abort = QPushButton('放弃参数')
+        self.btn_abort.clicked.connect(self.handle_gen_abort_param)
+
+        self.init_dialog()
+
+    def init_dialog(self):
+        self.btn_raw_data.setFixedWidth(120)
+        self.btn_key_data.setFixedWidth(120)
+        self.btn_nod_data.setFixedWidth(120)
+        self.btn_db_path.setFixedWidth(120)
+        self.ent_db_name.setFixedWidth(120)
+        self.box_raw_data.addWidget(self.btn_raw_data)
+        self.box_raw_data.addWidget(self.lbl_raw_data)
+        self.box_key_data.addWidget(self.btn_key_data)
+        self.box_key_data.addWidget(self.lbl_key_data)
+        self.box_nod_data.addWidget(self.btn_nod_data)
+        self.box_nod_data.addWidget(self.lbl_nod_data)
+        self.box_root.addLayout(self.box_raw_data)
+        self.box_root.addLayout(self.box_key_data)
+        self.box_root.addLayout(self.box_nod_data)
+        self.box_root.addWidget(LineSeparator())
+        self.box_db_path.addWidget(self.btn_db_path)
+        self.box_db_path.addWidget(self.lbl_db_path)
+        self.box_db_name.addWidget(self.lbl_db_name)
+        self.box_db_name.addWidget(self.ent_db_name)
+        self.box_db_name.addStretch(1)
+        self.box_root.addLayout(self.box_db_path)
+        self.box_root.addLayout(self.box_db_name)
+        self.box_root.addWidget(LineSeparator())
+        self.box_param.addWidget(self.lbl_x_rate)
+        self.box_param.addWidget(self.ent_x_rate)
+        self.box_param.addWidget(self.lbl_y_rate)
+        self.box_param.addWidget(self.ent_y_rate)
+        self.box_param.addWidget(self.lbl_t_rate)
+        self.box_param.addWidget(self.ent_t_rate)
+        self.box_param.addWidget(self.lbl_epochs)
+        self.box_param.addWidget(self.ent_epochs)
+        self.box_root.addLayout(self.box_param)
+        self.box_root.addWidget(LineSeparator())
+        self.box_root.addStretch(1)
+        self.box_commit.addStretch(1)
+        self.box_commit.addWidget(self.btn_commit)
+        self.box_commit.addWidget(self.btn_abort)
+        self.box_root.addLayout(self.box_commit)
+        self.setLayout(self.box_root)
+
+    def handle_ask_raw_data_path(self):
+        self.val_raw_data = os.path.normpath(QFileDialog.getExistingDirectory(self)).replace('\\', '/')
+        self.lbl_raw_data.setText(self.val_raw_data)
+
+    def handle_ask_key_data_path(self):
+        self.val_key_data = os.path.normpath(QFileDialog.getExistingDirectory(self)).replace('\\', '/')
+        self.lbl_key_data.setText(self.val_key_data)
+
+    def handle_ask_nod_data_path(self):
+        self.val_nod_data = os.path.normpath(QFileDialog.getExistingDirectory(self)).replace('\\', '/')
+        self.lbl_nod_data.setText(self.val_nod_data)
+
+    def handle_ask_db_path(self):
+        self.val_db_path = os.path.normpath(QFileDialog.getExistingDirectory(self)).replace('\\', '/')
+        self.lbl_db_path.setText(self.val_db_path)
+
+    def handle_gen_commit_param(self):
+        try:
+            self.main_widget.gen_raw_path = self.val_raw_data
+            self.main_widget.gen_key_path = self.val_key_data
+            self.main_widget.gen_nod_path = self.val_nod_data
+            self.main_widget.gen_db_path = self.val_db_path
+            self.main_widget.gen_db_name = self.ent_db_name.text()
+            self.main_widget.gen_x_rate = float(self.ent_x_rate.text())
+            self.main_widget.gen_y_rate = float(self.ent_y_rate.text())
+            self.main_widget.gen_t_rate = float(self.ent_t_rate.text())
+            self.main_widget.gen_epochs = int(self.ent_epochs.text())
+            self.close()
+        except Exception as e:
+            traceback.print_exc()
+
+    def handle_gen_abort_param(self):
+        try:
+            reply = QMessageBox.question(self, '提示', '确认放弃修改？参数将不被保存', QMessageBox.Yes, QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self.close()
+        except Exception as e:
+            traceback.print_exc()
+
+
+
+
+
+# ------------------------------------------------- graphics part ------------------------------------------------------
 
 class MvView(QGraphicsView):
     def __init__(self, scene, parent):
@@ -945,15 +1428,15 @@ class MvScene(QGraphicsScene):
         for i in range(int(self.minx // self.x_axis_gap), int(self.maxx // self.x_axis_gap) + 1):
             self.grid_vert.append((
                 i * self.x_axis_gap * self.scale / M2PRATIO,
-                -1 * self.miny / M2PRATIO,
+                -1 * (self.miny//self.y_axis_gap) * self.y_axis_gap / M2PRATIO,
                 i * self.x_axis_gap * self.scale / M2PRATIO,
-                -1 * self.maxy / M2PRATIO
+                -1 * (self.maxy//self.y_axis_gap) * self.y_axis_gap / M2PRATIO
             ))
         for j in range(int(self.miny // self.y_axis_gap), int(self.maxy // self.y_axis_gap) + 1):
             self.grid_horz.append((
-                self.minx / M2PRATIO,
+                (self.minx//self.x_axis_gap) * self.x_axis_gap / M2PRATIO,
                 -1 * j * self.y_axis_gap * self.scale / M2PRATIO,
-                self.maxx / M2PRATIO,
+                (self.maxx//self.x_axis_gap) * self.x_axis_gap / M2PRATIO,
                 -1 * j * self.y_axis_gap * self.scale / M2PRATIO
             ))
 
@@ -1062,6 +1545,18 @@ class MvWidget(QWidget):
         self.socket_save_path = os.path.realpath(os.path.curdir).replace('\\', '/') + '/' + 'socket_data'
         self.configfile = {}
         self.edit_data_dict = {}
+
+        # ---------------- gen ----------------
+        self.gen_raw_path = 'D:/'
+        self.gen_key_path = 'D:/keys/'
+        self.gen_nod_path = 'D:/nodes/'
+        self.gen_db_path = 'D:/'
+        self.gen_db_name = 'untitled'
+        self.gen_x_rate = .25
+        self.gen_y_rate = .25
+        self.gen_t_rate = .25
+        self.gen_epochs = 100
+
 
         self.val_mouse_pos = '鼠标位置：%s' % self.mouse_pos
         self.val_selected_node_id = '选中节点ID：%s' % self.selected_node_id
@@ -1413,8 +1908,8 @@ class MvWindow(QMainWindow):
         self.act_gen_basic_dataset = QAction('生成基础数据集(640×640)', self)
         self.act_gen_sqlite_db = QAction('生成数据库(320×320)', self)
         self.act_gen_gradient_update = QAction('梯度下降更新', self)
-        self.act_socket_open_data_port = QAction('× 打开图像采集Socket', self)
-        self.act_socket_export_to_sqlite = QAction('× 将采集图像导出为Sqlite', self)
+        self.act_socket_open_data_port = QAction('打开图像采集Socket', self)
+        self.act_socket_export_to_sqlite = QAction('将采集图像导出为Sqlite', self)
         self.act_about_version = QAction('关于Quicktron Mapviewer', self)
         self.act_about_help = QAction('× 使用说明', self)
 
@@ -1539,6 +2034,46 @@ class MvWindow(QMainWindow):
                     round(self.main_widget.canvas_scene.maxy, 2)))
         except Exception as e:
             traceback.print_exc()
+
+    def handle_progress_bar_gen_basedata(self, msg):
+        try:
+            k, v = msg.split(':')
+            if k == 'start':
+                self.progress.setVisible(True)
+                self.act_gen_basic_dataset.setDisabled(True)
+                self.status_message.setText('正在以行车采集数据生成标定-非标定基础数据...')
+            elif k == 'max':
+                self.progress.setMaximum(int(v))
+            elif k == 'min':
+                self.progress.setMinimum(int(v))
+            elif k == 'current':
+                self.progress.setValue(int(v))
+            elif k == 'stop':
+                self.progress.setVisible(False)
+                self.status_message.setText('基础标定-非标定数据生成完成')
+        except Exception as e:
+            traceback.print_exc()
+
+    def handle_progress_bar_gen_gradient_db(self, msg):
+        pass
+
+    def handle_progress_bar_gradient_update(self, msg):
+        pass
+
+    def handle_gen_basedata_finished(self):
+        try:
+            self.main_widget.canvas_view.scene.clear_canvas()
+            self.raw_path = self.main_widget.gen_key_path
+            self.load_path_thread = ThreadLoadPixPath(self.main_widget, self.raw_path, True)
+            self.load_path_thread.start()
+            self.load_path_thread.signal.connect(self.handle_progress_bar)
+            self.load_path_thread.finished.connect(self.main_widget.canvas_scene.handle_load_pixmaps_finished)
+            self.using_db = False
+        except Exception as e:
+            traceback.print_exc()
+
+    def handle_gen_db_finished(self):
+        pass
 
     # ------------------------------------- menubar function -------------------------------------
 
@@ -1685,19 +2220,42 @@ class MvWindow(QMainWindow):
             traceback.print_exc()
 
     def gen_config_gradient_param(self):
-        pass
+        try:
+            about = MvGenConfig(self.main_widget)
+            about.show()
+            about.exec_()
+        except Exception as e:
+            traceback.print_exc()
 
     def gen_basic_dataset(self):
-        pass
+        try:
+            self.gen_basedata_thread = ThreadGenBaseData(self.main_widget)
+            self.gen_basedata_thread.start()
+            self.gen_basedata_thread.signal.connect(self.handle_progress_bar_gen_basedata)
+            self.gen_basedata_thread.finished.connect(self.handle_gen_basedata_finished)
+        except Exception as e:
+            traceback.print_exc()
 
     def gen_sqlite_db(self):
-        pass
+        try:
+            self.gen_db_thread = ThreadGenDB(self.main_widget)
+            self.gen_db_thread.start()
+            self.gen_db_thread.signal.connect(self.handle_progress_bar_gen_gradient_db)
+            self.gen_db_thread.finished.connect(self.handle_gen_db_finished)
+            self.using_db = False
+        except Exception as e:
+            traceback.print_exc()
 
     def gen_gradient_update(self):
         pass
 
     def socket_open_data_port(self):
-        pass
+        try:
+            about = MvSocket(self.main_widget)
+            about.show()
+            about.exec_()
+        except Exception as e:
+            traceback.print_exc()
 
     def socket_export_to_sqlite(self):
         pass
