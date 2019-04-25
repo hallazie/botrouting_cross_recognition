@@ -1,8 +1,5 @@
 # ignore image data
-*.png
-*.bmp
-*.jpg
-*.jpeg
+
 
 # ignore parameter files
 *.params
